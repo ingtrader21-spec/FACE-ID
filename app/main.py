@@ -1,7 +1,7 @@
-import base64, json, os, time, threading, uuid
+import base64, json, os, time, threading, uuid, hashlib, hmac, re, io
 from typing import Optional
 import cv2, httpx, psycopg
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
@@ -9,6 +9,9 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 app=FastAPI(title="Codestra FACE-ID",version="1.0.0")
 DB=os.environ["DATABASE_URL"]
 ENGINE=os.getenv("RECOGNITION_ENGINE_URL","http://recognition-engine:8080")
+REGISTRATION_SECRET=os.getenv("FACEID_REGISTRATION_SECRET") or uuid.uuid4().hex
+PUBLIC_HOST=os.getenv("FACEID_PUBLIC_HOST","10.0.0.73")
+PUBLIC_PORT=int(os.getenv("FACEID_PUBLIC_PORT","8094"))
 
 class Enroll(BaseModel):
     subject_id: str
@@ -21,6 +24,15 @@ class SearchReq(BaseModel):
     image_base64: str
     threshold: float=0.363
     top_k: int=5
+class PublicEnroll(BaseModel):
+    full_name: str
+    id_hash: str
+    id_last4: str
+    image_base64: str
+    consent_obtained: bool
+    consent_text_version: str="2026-09"
+    token: str
+
 class CameraIn(BaseModel):
     camera_id: str
     name: str
@@ -36,6 +48,11 @@ def init_db():
         c.execute("""create table if not exists subjects(subject_id text primary key, display_name text not null, embedding jsonb not null, consent_obtained boolean not null, consent_reference text, retention_days int not null, created_at timestamptz not null default now(), updated_at timestamptz not null default now())""")
         c.execute("""create table if not exists cameras(camera_id text primary key, name text not null, host text not null, rtsp_path text not null, username text not null, password_env text not null, enabled boolean not null default true, created_at timestamptz not null default now())""")
         c.execute("""create table if not exists events(event_id text primary key, camera_id text, subject_id text, score double precision, event_type text not null, occurred_at timestamptz not null default now(), metadata jsonb not null default '{}'::jsonb)""")
+        c.execute("alter table subjects add column if not exists id_country text")
+        c.execute("alter table subjects add column if not exists id_type text")
+        c.execute("alter table subjects add column if not exists id_hash text")
+        c.execute("alter table subjects add column if not exists id_last4 text")
+        c.execute("alter table subjects add column if not exists enrollment_source text")
 
 WORKER_INTERVAL=float(os.getenv("FACEID_WORKER_INTERVAL_SECONDS","2"))
 EVENT_COOLDOWN=float(os.getenv("FACEID_EVENT_COOLDOWN_SECONDS","15"))
@@ -115,6 +132,26 @@ def startup():
         except Exception as e:
             last=e; time.sleep(1)
     raise last
+
+@app.middleware("http")
+async def local_admin_boundary(request:Request, call_next):
+    path=request.url.path
+    public = path == "/register" or path == "/v1/public/enroll" or path == "/healthz"
+    host = request.client.host if request.client else ""
+    local = host in {"127.0.0.1","::1","localhost"} or host.startswith("172.")
+    if not public and not local:
+        return Response("Local admin access only",status_code=403,media_type="text/plain")
+    return await call_next(request)
+
+@app.post("/v1/public/enroll")
+def public_enroll(req:Enroll):
+    return enroll(req)
+
+@app.get("/register", response_class=HTMLResponse)
+def registration_page():
+    page=os.path.join(os.path.dirname(__file__),"static","register.html")
+    with open(page,"r",encoding="utf-8") as f:
+        return HTMLResponse(f.read(),headers={"Cache-Control":"no-store"})
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard():

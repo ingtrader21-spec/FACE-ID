@@ -1,58 +1,50 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Codestra FACE-ID</title>
 <style>
-:root{--bg:#07111b;--panel:#0d1a26;--panel2:#122231;--line:#22384b;--text:#eef7fc;--muted:#8da6b9;--accent:#42bfff;--ok:#3bd49a;--bad:#ff6f86}
-*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top right,#10243a 0,#07111b 42%,#050c13 100%);color:var(--text);font:14px/1.45 Inter,system-ui,-apple-system,Segoe UI,sans-serif}
-button,input{font:inherit}.app{display:grid;grid-template-columns:235px 1fr;min-height:100vh}.side{background:#08141f;border-right:1px solid var(--line);padding:22px 15px;position:sticky;top:0;height:100vh}.brand{display:flex;gap:10px;align-items:center;margin:0 8px 26px;font-weight:850;font-size:18px}.logo{width:36px;height:36px;border-radius:11px;background:linear-gradient(135deg,#55cbff,#6d5eff);display:grid;place-items:center;color:#03101a;font-weight:950}.nav button{width:100%;border:0;background:transparent;color:var(--muted);text-align:left;padding:11px 12px;border-radius:9px;margin:3px 0;cursor:pointer}.nav button:hover,.nav button.active{background:#142536;color:#fff}.foot{position:absolute;bottom:20px;left:22px;color:var(--muted);font-size:11px}
-main{padding:28px;min-width:0}.top{display:flex;justify-content:space-between;gap:18px;align-items:center;margin-bottom:22px}.top h1{margin:0;font-size:26px}.top p{margin:4px 0 0;color:var(--muted)}.health{display:flex;gap:8px;align-items:center;border:1px solid var(--line);background:#0a1721;padding:8px 11px;border-radius:999px;color:var(--muted)}.dot{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 11px var(--ok)}
-.grid{display:grid;gap:15px}.stats{grid-template-columns:repeat(4,minmax(0,1fr));margin-bottom:15px}.card{border:1px solid var(--line);background:linear-gradient(180deg,#0e1b27,#0a151f);border-radius:15px;padding:16px;box-shadow:0 14px 35px #0005}.stat small{color:var(--muted)}.stat strong{display:block;font-size:28px;margin-top:6px}.layout{grid-template-columns:minmax(0,1.65fr) minmax(310px,.8fr)}.camera{padding:0;overflow:hidden}.camhead{display:flex;justify-content:space-between;align-items:center;padding:13px 15px;border-bottom:1px solid var(--line)}.live{font-size:11px;color:#d9fff1;border:1px solid #245b46;background:#10382a;padding:4px 8px;border-radius:999px}.video{aspect-ratio:16/9;background:#010508;position:relative;display:grid;place-items:center}.video img{width:100%;height:100%;object-fit:contain}.overlay{position:absolute;left:12px;bottom:10px;background:#05090dcc;border-radius:8px;padding:6px 9px;color:#d4e8f4;font-size:11px}.actions{display:flex;gap:8px;flex-wrap:wrap;padding:12px}.btn{border:1px solid #2b536b;background:#102839;color:#e7f8ff;padding:8px 11px;border-radius:9px;cursor:pointer}.btn.primary{background:linear-gradient(135deg,#1598d7,#536ae9);border:0;font-weight:750}.btn.danger{border-color:#733342;background:#2b1219;color:#ffc1ca}.section{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}.section h2{margin:0;font-size:15px}.events{max-height:520px;overflow:auto}.event{display:flex;gap:10px;padding:11px 0;border-bottom:1px solid #172938}.avatar{width:36px;height:36px;border-radius:11px;background:#173149;display:grid;place-items:center;color:#9edcff;font-weight:800}.eventmain{flex:1;min-width:0}.eventname{font-weight:750}.meta{color:var(--muted);font-size:11px}.score{color:var(--muted);font-size:11px}.people{grid-template-columns:repeat(auto-fill,minmax(230px,1fr))}.person{display:flex;gap:11px;align-items:center}.grow{flex:1;min-width:0}.table{width:100%;border-collapse:collapse}.table th,.table td{padding:11px 9px;border-bottom:1px solid #1a2d3d;text-align:left}.table th{font-size:11px;color:var(--muted)}.tab{display:none}.tab.active{display:block}.muted{color:var(--muted)}.small{font-size:11px}
-.modal{position:fixed;inset:0;background:#000a;display:none;place-items:center;padding:18px;z-index:10}.modal.show{display:grid}.dialog{width:min(520px,100%);background:#0d1a25;border:1px solid #2a4255;border-radius:16px;padding:20px}.dialog h2{margin:0 0 4px}.dialog p{margin:0 0 14px;color:var(--muted)}.field{margin:11px 0}.field label{display:block;margin-bottom:6px;font-size:12px;color:#c2d2dd}.field input[type=text],.field input[type=file]{width:100%;padding:10px;border-radius:9px;border:1px solid #2a4153;background:#09141d;color:#fff}.row{display:flex;gap:8px;align-items:center}.row>*{flex:1}.dlgactions{display:flex;gap:8px;justify-content:flex-end;margin-top:15px}.toast{position:fixed;right:20px;bottom:20px;background:#102738;border:1px solid #315772;border-radius:10px;padding:11px 14px;display:none;z-index:30}.toast.show{display:block}
-@media(max-width:950px){.app{grid-template-columns:1fr}.side{height:auto;position:static;border-right:0;border-bottom:1px solid var(--line)}.nav{display:flex;overflow:auto}.nav button{width:auto;white-space:nowrap}.foot{display:none}.stats{grid-template-columns:repeat(2,1fr)}.layout{grid-template-columns:1fr}main{padding:18px}}
+:root{--bg:#f4f7fb;--panel:#fff;--ink:#132033;--muted:#718096;--line:#e1e7ef;--blue:#1769e8;--blue2:#4d68e9;--green:#149565;--red:#d44b5e;--amber:#b87813;--shadow:0 12px 30px rgba(34,55,80,.08)}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 Inter,system-ui,-apple-system,Segoe UI,sans-serif}
+button,input{font:inherit}.shell{display:grid;grid-template-columns:230px 1fr;min-height:100vh}.side{background:#0f1a28;color:#eaf2fb;padding:22px 15px;position:sticky;top:0;height:100vh}.brand{display:flex;gap:10px;align-items:center;margin:0 7px 28px;font-weight:850;font-size:18px}.mark{width:36px;height:36px;border-radius:11px;background:linear-gradient(135deg,#1c78f3,#7766ff);display:grid;place-items:center;font-weight:900}.nav button{width:100%;border:0;background:transparent;color:#9db0c5;text-align:left;padding:11px 12px;border-radius:9px;margin:3px 0;cursor:pointer}.nav button:hover,.nav button.active{background:#1a2a3e;color:white}.sidefoot{position:absolute;left:22px;bottom:20px;color:#7f93a8;font-size:11px}
+main{padding:26px;min-width:0}.top{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:20px}.top h1{font-size:25px;margin:0}.top p{margin:4px 0 0;color:var(--muted)}.status{display:flex;gap:8px;align-items:center;background:white;border:1px solid var(--line);padding:8px 11px;border-radius:999px;color:var(--muted);box-shadow:var(--shadow)}.dot{width:8px;height:8px;border-radius:50%;background:var(--green)}
+.grid{display:grid;gap:15px}.stats{grid-template-columns:repeat(4,minmax(0,1fr));margin-bottom:15px}.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:var(--shadow)}.stat .k{color:var(--muted);font-size:12px}.stat .v{font-size:28px;font-weight:850;margin-top:4px}.stat .s{color:#9aa7b5;font-size:11px}.layout{grid-template-columns:minmax(0,1.6fr) minmax(310px,.8fr)}.camera{padding:0;overflow:hidden}.camhead{display:flex;justify-content:space-between;align-items:center;padding:13px 15px;border-bottom:1px solid var(--line)}.live{font-size:11px;color:#106d4c;background:#eaf8f2;border:1px solid #c8ebdc;border-radius:999px;padding:4px 8px}.video{background:#05090e;aspect-ratio:16/9;position:relative;display:grid;place-items:center}.video img{width:100%;height:100%;object-fit:contain}.overlay{position:absolute;left:12px;bottom:10px;background:#08111bcc;color:#e8f1f8;padding:6px 9px;border-radius:8px;font-size:11px}.toolbar{display:flex;gap:8px;padding:12px;flex-wrap:wrap}.btn{border:1px solid #ccd7e3;background:#fff;color:#25364a;padding:8px 11px;border-radius:9px;cursor:pointer}.btn:hover{background:#f6f9fc}.btn.primary{border:0;background:linear-gradient(135deg,var(--blue),var(--blue2));color:white;font-weight:750}.btn.danger{color:#b93549;border-color:#efc9d0;background:#fff6f7}
+.section{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}.section h2{font-size:15px;margin:0}.events{max-height:500px;overflow:auto}.event{display:flex;gap:10px;padding:11px 0;border-bottom:1px solid #edf1f5}.avatar{width:36px;height:36px;border-radius:11px;background:#edf4ff;color:#2362ad;display:grid;place-items:center;font-weight:850}.eventmain{flex:1;min-width:0}.eventname{font-weight:750}.meta,.small{font-size:11px;color:var(--muted)}.score{font-size:11px;color:var(--muted)}.people{grid-template-columns:repeat(auto-fill,minmax(235px,1fr))}.person{display:flex;gap:11px;align-items:center}.grow{flex:1;min-width:0}.muted{color:var(--muted)}
+.table{width:100%;border-collapse:collapse}.table th,.table td{padding:11px 9px;border-bottom:1px solid #edf1f5;text-align:left}.table th{font-size:11px;color:var(--muted)}.filterbar{display:flex;gap:8px;margin-bottom:12px}.filterbar input{flex:1;border:1px solid var(--line);border-radius:10px;padding:9px 11px;background:white}.tab{display:none}.tab.active{display:block}
+.qrwrap{display:grid;grid-template-columns:260px 1fr;gap:22px;align-items:center}.qrbox{background:white;border:1px solid var(--line);border-radius:18px;padding:14px;text-align:center}.qrbox img{width:220px;max-width:100%;image-rendering:pixelated}.qrsteps{margin:12px 0 0;padding-left:20px;color:#45566a}.qrsteps li{margin:8px 0}.note{background:#f7f9fc;border:1px solid var(--line);border-radius:12px;padding:12px;color:#58687a;font-size:12px}.url{margin-top:12px;padding:10px 12px;border:1px dashed #b8c7d8;border-radius:10px;background:#fbfdff;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;word-break:break-all}
+@media(max-width:950px){.shell{grid-template-columns:1fr}.side{height:auto;position:static}.nav{display:flex;overflow:auto}.nav button{width:auto;white-space:nowrap}.sidefoot{display:none}.stats{grid-template-columns:repeat(2,1fr)}.layout,.qrwrap{grid-template-columns:1fr}main{padding:18px}.qrbox{max-width:280px}}
 </style>
 </head>
 <body>
-<div class="app">
+<div class="shell">
 <aside class="side">
-  <div class="brand"><div class="logo">F</div><div>Codestra FACE-ID</div></div>
+  <div class="brand"><div class="mark">F</div><div>Codestra FACE-ID</div></div>
   <div class="nav">
     <button class="active" data-tab="overview">Overview</button>
     <button data-tab="people">People</button>
     <button data-tab="events">Events</button>
+    <button data-tab="registration">Registration QR</button>
     <button data-tab="system">System</button>
   </div>
-  <div class="foot">Local-first biometric processing<br>NABEEL Station • Ubuntu</div>
+  <div class="sidefoot">Local-first recognition<br>NABEEL Station • Ubuntu</div>
 </aside>
 <main>
-  <div class="top">
-    <div><h1 id="pageTitle">Overview</h1><p>Live camera recognition, enrollment and events</p></div>
-    <div class="health"><span class="dot"></span><span id="readyText">Checking system…</span></div>
-  </div>
+  <div class="top"><div><h1 id="pageTitle">Overview</h1><p>Live recognition, people and enrollment</p></div><div class="status"><span class="dot"></span><span id="readyText">Checking…</span></div></div>
 
   <section class="tab active" id="overview">
     <div class="grid stats">
-      <div class="card stat"><small>Enrolled people</small><strong id="sSubjects">0</strong><span class="meta">consented identities</span></div>
-      <div class="card stat"><small>Recognition events</small><strong id="sEvents">0</strong><span class="meta">local event ledger</span></div>
-      <div class="card stat"><small>Recognized</small><strong id="sRecognized">0</strong><span class="meta">matched faces</span></div>
-      <div class="card stat"><small>Unknown</small><strong id="sUnknown">0</strong><span class="meta">unmatched detections</span></div>
+      <div class="card stat"><div class="k">Enrolled people</div><div class="v" id="sSubjects">0</div><div class="s">consented identities</div></div>
+      <div class="card stat"><div class="k">Events</div><div class="v" id="sEvents">0</div><div class="s">local event ledger</div></div>
+      <div class="card stat"><div class="k">Recognized</div><div class="v" id="sRecognized">0</div><div class="s">matched faces</div></div>
+      <div class="card stat"><div class="k">Unknown</div><div class="v" id="sUnknown">0</div><div class="s">review candidates</div></div>
     </div>
     <div class="grid layout">
       <div class="card camera">
         <div class="camhead"><strong id="cameraName">EZVIZ Main Camera</strong><span class="live">● LIVE</span></div>
-        <div class="video"><img id="liveImg" alt="Live camera feed"><div class="overlay" id="cameraMeta">Connecting…</div></div>
-        <div class="actions">
-          <button class="btn primary" onclick="openEnroll()">Enroll person</button>
-          <button class="btn" onclick="recognizeNow()">Recognize now</button>
-          <button class="btn" onclick="refreshAll()">Refresh</button>
-        </div>
+        <div class="video"><img id="liveImg" alt="Live camera"><div class="overlay" id="cameraMeta">Connecting…</div></div>
+        <div class="toolbar"><button class="btn primary" onclick="openEnroll()">Enroll person</button><button class="btn" onclick="recognizeNow()">Recognize now</button><button class="btn" onclick="showTab('registration')">Show registration QR</button><button class="btn" onclick="refreshAll()">Refresh</button></div>
       </div>
-      <div class="card">
-        <div class="section"><h2>Recent detections</h2><button class="btn" onclick="showTab('events')">View all</button></div>
-        <div class="events" id="recentEvents"></div>
-      </div>
+      <div class="card"><div class="section"><h2>Recent detections</h2><button class="btn" onclick="showTab('events')">View all</button></div><div class="events" id="recentEvents"></div></div>
     </div>
   </section>
 
@@ -63,59 +55,65 @@ main{padding:28px;min-width:0}.top{display:flex;justify-content:space-between;ga
 
   <section class="tab" id="events">
     <div class="card">
-      <div class="section"><h2>Recognition event history</h2><button class="btn" onclick="loadEvents()">Refresh</button></div>
+      <div class="section"><h2>Recognition history</h2><button class="btn" onclick="loadEvents()">Refresh</button></div>
+      <div class="filterbar"><input id="eventSearch" placeholder="Search person, camera or event…" oninput="renderEventTable()"><button class="btn" onclick="toggleUnknown()" id="unknownBtn">Unknown only</button></div>
       <div style="overflow:auto"><table class="table"><thead><tr><th>Time</th><th>Result</th><th>Person</th><th>Camera</th><th>Confidence</th></tr></thead><tbody id="eventsTable"></tbody></table></div>
     </div>
   </section>
 
-  <section class="tab" id="system">
-    <div class="grid layout">
-      <div class="card"><div class="section"><h2>Camera</h2></div><div id="cameraInfo" class="muted">Loading…</div></div>
-      <div class="card"><div class="section"><h2>Platform</h2></div><div id="systemInfo" class="muted">Loading…</div></div>
+  <section class="tab" id="registration">
+    <div class="card">
+      <div class="section"><h2>QR self-registration</h2><span class="muted small">Local network only</span></div>
+      <div class="qrwrap">
+        <div class="qrbox"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAOgAAADoAQMAAADfZzo7AAAABlBMVEUAAAD///+l2Z/dAAAAAnRSTlP//8i138cAAAAJcEhZcwAACxIAAAsSAdLdfvwAAADaSURBVFiF7ZVBEoMwDAP1/0+70yArSVu4syXMhMR7wpKM6mrpofenOpYvo9gVJvWHH3e9T2kFk2qrKRU2Hdgu+Ac6dp32CkSn6tWh/s4Ch3p2Lc+PWcehveRRtpWA1Mb+zLaotNR9qIr4lSDwaDnUm+QlKtXsgYd2HI+kIdP0NgSX1lS87VBU2l0Yu39SDjuSbrVWvWcbkCpFnxNyJo3B2/LzjaQZ29bdXheWdi+0BiBuB9LF3bG7Wn0sPfTWKjuaeqCtToBSC1/JuD0Ppes0c9W9QdKL9dC70xdtPUiZVxBysAAAAABJRU5ErkJggg==" alt="FACE-ID registration QR"><div class="small">Scan with a phone on the Appolon network</div></div>
+        <div>
+          <h2 style="margin-top:0">Dominican Republic enrollment</h2>
+          <p class="muted">A person scans the QR, enters their name and Dominican cédula reference, takes a face photo, and explicitly consents to enrollment.</p>
+          <ol class="qrsteps"><li>Scan this QR on the same local network.</li><li>Enter full name and cédula.</li><li>Take a clear front-facing photo.</li><li>Accept biometric consent and submit.</li></ol>
+          <div class="note"><strong>Privacy design:</strong> the full cédula number is hashed on the phone before submission. FACE-ID stores only the cryptographic reference and the last four digits in the enrollment reference. This is not Dominican government identity verification.</div>
+          <div class="url">http://10.0.0.73:8094/register</div>
+        </div>
+      </div>
     </div>
+  </section>
+
+  <section class="tab" id="system">
+    <div class="grid layout"><div class="card"><div class="section"><h2>Camera</h2></div><div id="cameraInfo" class="muted">Loading…</div></div><div class="card"><div class="section"><h2>Platform</h2></div><div id="systemInfo" class="muted">Loading…</div></div></div>
   </section>
 </main>
 </div>
 
-<div class="modal" id="enrollModal">
-  <div class="dialog">
-    <h2>Enroll a person</h2>
-    <p>Create a local biometric identity. Explicit consent is required.</p>
-    <div class="field"><label>Name</label><input id="enrollName" type="text" placeholder="Person's display name"></div>
-    <div class="field"><label>Subject ID</label><input id="enrollId" type="text" placeholder="auto-generated if blank"></div>
-    <div class="field"><label>Face image</label><input id="enrollFile" type="file" accept="image/*"></div>
-    <div class="row"><button class="btn" onclick="captureForEnroll()">Use current camera frame</button><span class="muted small" id="captureState">or upload a clear front-facing photo</span></div>
-    <div class="field"><label><input id="consent" type="checkbox"> I confirm this person consented to face enrollment</label></div>
-    <div class="dlgactions"><button class="btn" onclick="closeEnroll()">Cancel</button><button class="btn primary" onclick="submitEnroll()">Enroll</button></div>
+<div id="enrollModal" style="display:none;position:fixed;inset:0;background:#0008;place-items:center;z-index:20;padding:18px">
+  <div class="card" style="width:min(520px,100%)">
+    <div class="section"><h2>Enroll a person</h2><button class="btn" onclick="closeEnroll()">Close</button></div>
+    <p class="muted">Explicit consent is required.</p>
+    <div style="display:grid;gap:10px"><input id="enrollName" placeholder="Display name" style="padding:11px;border:1px solid var(--line);border-radius:10px"><input id="enrollId" placeholder="Subject ID (optional)" style="padding:11px;border:1px solid var(--line);border-radius:10px"><input id="enrollFile" type="file" accept="image/*"><label><input id="consent" type="checkbox"> I confirm this person consented to biometric enrollment</label><div class="toolbar" style="padding:0"><button class="btn" onclick="captureForEnroll()">Use current camera frame</button><button class="btn primary" onclick="submitEnroll()">Enroll</button></div><div id="captureState" class="small muted"></div></div>
   </div>
 </div>
-<div class="toast" id="toast"></div>
 
 <script>
-function q(s){return document.querySelector(s)}
-var cameraId='ezviz-main',capturedBase64=null;
-function toast(msg,bad){var t=q('#toast');t.textContent=msg;t.style.borderColor=bad?'#7b3341':'#315772';t.classList.add('show');setTimeout(function(){t.classList.remove('show')},3200)}
-function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
-function initials(v){return String(v||'?').split(/\s+/).slice(0,2).map(function(x){return x.charAt(0)}).join('').toUpperCase()}
-function fmtTime(v){return v?new Date(v).toLocaleString():'—'}
-function pct(v){return v==null?'—':(v*100).toFixed(1)+'%'}
-async function j(url,opt){var r=await fetch(url,opt);if(!r.ok)throw new Error((await r.text())||r.statusText);return r.json()}
-document.querySelectorAll('.nav button').forEach(function(b){b.onclick=function(){showTab(b.dataset.tab)}})
-function showTab(id){document.querySelectorAll('.tab').forEach(function(x){x.classList.toggle('active',x.id===id)});document.querySelectorAll('.nav button').forEach(function(x){x.classList.toggle('active',x.dataset.tab===id)});q('#pageTitle').textContent=id.charAt(0).toUpperCase()+id.slice(1);if(id==='people')loadPeople();if(id==='events')loadEvents();if(id==='system')loadSystem()}
-function renderRecent(items){q('#recentEvents').innerHTML=items.length?items.map(function(e){return '<div class="event"><div class="avatar">'+initials(e.display_name||'Unknown')+'</div><div class="eventmain"><div class="eventname">'+esc(e.display_name||'Unknown face')+'</div><div class="meta">'+esc(String(e.event_type).replaceAll('_',' '))+' • '+fmtTime(e.occurred_at)+'</div></div><div class="score">'+pct(e.score)+'</div></div>'}).join(''):'<div class="muted">No detections yet.</div>'}
-async function refreshAll(){try{var d=await j('/v1/dashboard'),s=d.stats;q('#sSubjects').textContent=s.subjects;q('#sEvents').textContent=s.events;q('#sRecognized').textContent=s.recognized;q('#sUnknown').textContent=s.unknown;if(d.cameras.length){cameraId=d.cameras[0].camera_id;var c=d.cameras[0];q('#cameraName').textContent=c.name;q('#cameraMeta').textContent=(c.frame?(c.frame.width+'×'+c.frame.height+' • '):'')+c.host;if(!q('#liveImg').src)q('#liveImg').src='/v1/cameras/'+encodeURIComponent(cameraId)+'/stream.mjpg'}renderRecent(d.recent)}catch(e){toast('Dashboard refresh failed',true)}}
-async function loadPeople(){try{var p=await j('/v1/subjects');q('#peopleGrid').innerHTML=p.length?p.map(function(x){return '<div class="card person"><div class="avatar">'+initials(x.display_name)+'</div><div class="grow"><div style="font-weight:750">'+esc(x.display_name)+'</div><div class="muted small">'+esc(x.subject_id)+'</div><div class="muted small">Retention '+x.retention_days+' days</div></div><button class="btn danger" onclick="removePerson(\''+encodeURIComponent(x.subject_id)+'\')">Delete</button></div>'}).join(''):'<div class="card muted">No people enrolled yet.</div>'}catch(e){toast('Could not load people',true)}}
-async function removePerson(id){if(!confirm('Delete this enrolled identity?'))return;var r=await fetch('/v1/faces/'+id,{method:'DELETE'});if(r.ok){toast('Identity deleted');loadPeople();refreshAll()}else toast('Delete failed',true)}
-async function loadEvents(){try{var es=await j('/v1/events?limit=250'),names={};(await j('/v1/subjects')).forEach(function(x){names[x.subject_id]=x.display_name});q('#eventsTable').innerHTML=es.map(function(e){return '<tr><td>'+fmtTime(e.occurred_at)+'</td><td>'+esc(String(e.event_type).replaceAll('_',' '))+'</td><td>'+esc(names[e.subject_id]||'Unknown')+'</td><td>'+esc(e.camera_id||'—')+'</td><td>'+pct(e.score)+'</td></tr>'}).join('')||'<tr><td colspan="5" class="muted">No events yet.</td></tr>'}catch(e){toast('Could not load events',true)}}
-async function loadSystem(){try{var r=await j('/readyz'),cams=await j('/v1/cameras');q('#systemInfo').innerHTML='<b style="color:#dff5ff">FACE-ID API</b><br>Database: '+(r.database?'Ready':'Unavailable')+'<br>Recognition engine: '+(r.recognition_engine?'Ready':'Unavailable')+'<br><br><a href="/docs" target="_blank" style="color:#65c8ff">Open API documentation</a>';if(cams.length){var c=cams[0],o=await j('/v1/cameras/'+encodeURIComponent(c.camera_id)+'/onvif');q('#cameraInfo').innerHTML='<b style="color:#dff5ff">'+esc(c.name)+'</b><br>IP: '+esc(c.host)+'<br>Enabled: '+(c.enabled?'Yes':'No')+'<br>ONVIF profiles: '+o.profiles.length+'<br>'+o.profiles.map(function(p){return esc(p.name)+' — '+p.width+'×'+p.height+' '+esc(p.encoding)}).join('<br>')}}catch(e){toast('System status failed',true)}}
-function openEnroll(){capturedBase64=null;q('#captureState').textContent='or upload a clear front-facing photo';q('#enrollModal').classList.add('show')}
-function closeEnroll(){q('#enrollModal').classList.remove('show')}
-function blobToB64(blob){return new Promise(function(res,rej){var fr=new FileReader();fr.onload=function(){res(fr.result.split(',')[1])};fr.onerror=rej;fr.readAsDataURL(blob)})}
-async function captureForEnroll(){try{var r=await fetch('/v1/cameras/'+encodeURIComponent(cameraId)+'/snapshot?t='+Date.now()),b=await r.blob();capturedBase64=await blobToB64(b);q('#captureState').textContent='Current camera frame selected';toast('Camera frame captured')}catch(e){toast('Could not capture camera frame',true)}}
-async function submitEnroll(){var name=q('#enrollName').value.trim();if(!name)return toast('Enter a name',true);if(!q('#consent').checked)return toast('Consent confirmation is required',true);var image=capturedBase64,f=q('#enrollFile').files[0];if(f)image=await blobToB64(f);if(!image)return toast('Choose a face image or capture the camera',true);var sid=q('#enrollId').value.trim()||name.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')+'-'+Date.now().toString().slice(-5);try{await j('/v1/faces/enroll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subject_id:sid,display_name:name,image_base64:image,consent_obtained:true,consent_reference:'dashboard-confirmed',retention_days:365})});toast(name+' enrolled');closeEnroll();q('#enrollName').value='';q('#enrollId').value='';q('#enrollFile').value='';q('#consent').checked=false;refreshAll();loadPeople()}catch(e){toast('Enrollment failed',true)}}
-async function recognizeNow(){try{var r=await fetch('/v1/cameras/'+encodeURIComponent(cameraId)+'/snapshot?t='+Date.now()),b=await r.blob(),image=await blobToB64(b),out=await j('/v1/faces/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_base64:image,threshold:.363,top_k:1})});if(out.recognized)toast('Recognized: '+(out.best.display_name||out.best.subject_id)+' • '+pct(out.best.score));else toast('Face not recognized',true)}catch(e){toast('Recognition failed',true)}}
-async function boot(){try{await j('/readyz');q('#readyText').textContent='System ready'}catch(e){q('#readyText').textContent='System issue';q('.dot').style.background='var(--bad)'}refreshAll();setInterval(refreshAll,5000)}
+const q=s=>document.querySelector(s);let cameraId='ezviz-main',capturedBase64=null,allEvents=[],unknownOnly=false,names={};
+function toast(msg){alert(msg)}
+function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function initials(v){return String(v||'?').split(/\s+/).slice(0,2).map(x=>x[0]||'').join('').toUpperCase()}
+function fmt(v){return v?new Date(v).toLocaleString():'—'}function pct(v){return v==null?'—':(v*100).toFixed(1)+'%'}
+async function j(u,o){const r=await fetch(u,o);if(!r.ok)throw new Error(await r.text());return r.json()}
+document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
+function showTab(id){document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.id===id));document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.tab===id));q('#pageTitle').textContent=id[0].toUpperCase()+id.slice(1);if(id==='people')loadPeople();if(id==='events')loadEvents();if(id==='system')loadSystem()}
+function renderRecent(items){q('#recentEvents').innerHTML=items.length?items.map(e=>'<div class="event"><div class="avatar">'+initials(e.display_name||'Unknown')+'</div><div class="eventmain"><div class="eventname">'+esc(e.display_name||'Unknown face')+'</div><div class="meta">'+esc(e.event_type.replaceAll('_',' '))+' • '+fmt(e.occurred_at)+'</div></div><div class="score">'+pct(e.score)+'</div></div>').join(''):'<div class="muted">No detections yet.</div>'}
+async function refreshAll(){try{const d=await j('/v1/dashboard'),s=d.stats;q('#sSubjects').textContent=s.subjects;q('#sEvents').textContent=s.events;q('#sRecognized').textContent=s.recognized;q('#sUnknown').textContent=s.unknown;if(d.cameras.length){const c=d.cameras[0];cameraId=c.camera_id;q('#cameraName').textContent=c.name;q('#cameraMeta').textContent=(c.frame?c.frame.width+'×'+c.frame.height+' • ':'')+c.host;if(!q('#liveImg').src)q('#liveImg').src='/v1/cameras/'+encodeURIComponent(cameraId)+'/stream.mjpg'}renderRecent(d.recent)}catch(e){}}
+async function loadPeople(){const p=await j('/v1/subjects');names={};p.forEach(x=>names[x.subject_id]=x.display_name);q('#peopleGrid').innerHTML=p.length?p.map(x=>'<div class="card person"><div class="avatar">'+initials(x.display_name)+'</div><div class="grow"><div style="font-weight:750">'+esc(x.display_name)+'</div><div class="small muted">'+esc(x.subject_id)+'</div><div class="small muted">Retention '+x.retention_days+' days</div></div><button class="btn danger" onclick="removePerson(\''+encodeURIComponent(x.subject_id)+'\')">Delete</button></div>').join(''):'<div class="card muted">No people enrolled yet.</div>'}
+async function removePerson(id){if(!confirm('Delete this enrolled identity?'))return;await fetch('/v1/faces/'+id,{method:'DELETE'});loadPeople();refreshAll()}
+async function loadEvents(){const p=await j('/v1/subjects');names={};p.forEach(x=>names[x.subject_id]=x.display_name);allEvents=await j('/v1/events?limit=500');renderEventTable()}
+function toggleUnknown(){unknownOnly=!unknownOnly;q('#unknownBtn').textContent=unknownOnly?'Show all':'Unknown only';renderEventTable()}
+function renderEventTable(){const s=(q('#eventSearch')?.value||'').toLowerCase();const list=allEvents.filter(e=>{if(unknownOnly&&e.event_type!=='unknown_face')return false;const txt=[e.event_type,e.camera_id,names[e.subject_id]||'unknown'].join(' ').toLowerCase();return !s||txt.includes(s)});q('#eventsTable').innerHTML=list.map(e=>'<tr><td>'+fmt(e.occurred_at)+'</td><td>'+esc(e.event_type.replaceAll('_',' '))+'</td><td>'+esc(names[e.subject_id]||'Unknown')+'</td><td>'+esc(e.camera_id||'—')+'</td><td>'+pct(e.score)+'</td></tr>').join('')||'<tr><td colspan="5" class="muted">No matching events.</td></tr>'}
+async function loadSystem(){try{const [r,cams]=await Promise.all([j('/readyz'),j('/v1/cameras')]);q('#systemInfo').innerHTML='<b>FACE-ID API</b><br>Database: '+(r.database?'Ready':'Unavailable')+'<br>Recognition engine: '+(r.recognition_engine?'Ready':'Unavailable')+'<br><br><a href="/docs" target="_blank">Open API documentation</a>';if(cams.length){const c=cams[0],o=await j('/v1/cameras/'+encodeURIComponent(c.camera_id)+'/onvif');q('#cameraInfo').innerHTML='<b>'+esc(c.name)+'</b><br>IP: '+esc(c.host)+'<br>Enabled: '+(c.enabled?'Yes':'No')+'<br>ONVIF profiles: '+o.profiles.length+'<br>'+o.profiles.map(p=>esc(p.name)+' — '+p.width+'×'+p.height+' '+esc(p.encoding)).join('<br>')}}catch(e){}}
+function openEnroll(){capturedBase64=null;q('#enrollModal').style.display='grid';q('#captureState').textContent=''}function closeEnroll(){q('#enrollModal').style.display='none'}
+function b64(blob){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(',')[1]);r.onerror=rej;r.readAsDataURL(blob)})}
+async function captureForEnroll(){const r=await fetch('/v1/cameras/'+encodeURIComponent(cameraId)+'/snapshot?t='+Date.now());capturedBase64=await b64(await r.blob());q('#captureState').textContent='Current camera frame selected'}
+async function submitEnroll(){const name=q('#enrollName').value.trim();if(!name)return toast('Enter a name');if(!q('#consent').checked)return toast('Consent is required');let image=capturedBase64;const f=q('#enrollFile').files[0];if(f)image=await b64(f);if(!image)return toast('Choose a face image or capture the camera');const sid=q('#enrollId').value.trim()||name.toLowerCase().replace(/[^a-z0-9]+/g,'-')+'-'+Date.now().toString().slice(-5);await j('/v1/faces/enroll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subject_id:sid,display_name:name,image_base64:image,consent_obtained:true,consent_reference:'dashboard-confirmed',retention_days:365})});closeEnroll();refreshAll();loadPeople()}
+async function recognizeNow(){const r=await fetch('/v1/cameras/'+encodeURIComponent(cameraId)+'/snapshot?t='+Date.now()),image=await b64(await r.blob()),out=await j('/v1/faces/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_base64:image,threshold:.363,top_k:1})});toast(out.recognized?'Recognized: '+(out.best.display_name||out.best.subject_id)+' • '+pct(out.best.score):'Face not recognized')}
+async function boot(){try{await j('/readyz');q('#readyText').textContent='System ready'}catch(e){q('#readyText').textContent='System issue';q('.dot').style.background='var(--red)'}refreshAll();setInterval(refreshAll,5000)}
 boot();
 </script>
-</body>
-</html>
+</body></html>
