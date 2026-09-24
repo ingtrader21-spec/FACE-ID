@@ -81,13 +81,13 @@ main{padding:26px;min-width:0}.top{display:flex;justify-content:space-between;ga
     <div class="card">
       <div class="section"><h2>QR self-registration</h2><span class="muted small">Local network only</span></div>
       <div class="qrwrap">
-        <div class="qrbox"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAOgAAADoAQMAAADfZzo7AAAABlBMVEUAAAD///+l2Z/dAAAAAnRSTlP//8i138cAAAAJcEhZcwAACxIAAAsSAdLdfvwAAADaSURBVFiF7ZVBEoMwDAP1/0+70yArSVu4syXMhMR7wpKM6mrpofenOpYvo9gVJvWHH3e9T2kFk2qrKRU2Hdgu+Ac6dp32CkSn6tWh/s4Ch3p2Lc+PWcehveRRtpWA1Mb+zLaotNR9qIr4lSDwaDnUm+QlKtXsgYd2HI+kIdP0NgSX1lS87VBU2l0Yu39SDjuSbrVWvWcbkCpFnxNyJo3B2/LzjaQZ29bdXheWdi+0BiBuB9LF3bG7Wn0sPfTWKjuaeqCtToBSC1/JuD0Ppes0c9W9QdKL9dC70xdtPUiZVxBysAAAAABJRU5ErkJggg==" alt="FACE-ID registration QR"><div class="small">Scan with a phone on the Appolon network</div></div>
+        <div class="qrbox"><img src="/v1/registration/qr" alt="FACE-ID registration QR"><div class="small">Scan with a phone on the Appolon network</div></div>
         <div>
           <h2 style="margin-top:0">Dominican Republic enrollment</h2>
           <p class="muted">A person scans the QR, enters their name and Dominican cédula reference, takes a face photo, and explicitly consents to enrollment.</p>
           <ol class="qrsteps"><li>Scan this QR on the same local network.</li><li>Enter full name and cédula.</li><li>Take a clear front-facing photo.</li><li>Accept biometric consent and submit.</li></ol>
           <div class="note"><strong>Privacy design:</strong> the full cédula number is hashed on the phone before submission. FACE-ID stores only the cryptographic reference and the last four digits in the enrollment reference. This is not Dominican government identity verification.</div>
-          <div class="url">http://10.0.0.73:8094/register</div>
+          <div class="url" id="registrationUrl">Loading secure registration link…</div>
         </div>
       </div>
     </div>
@@ -122,7 +122,7 @@ function initials(v){return String(v||'?').split(/\s+/).slice(0,2).map(x=>x[0]||
 function fmt(v){return v?new Date(v).toLocaleString():'—'}function pct(v){return v==null?'—':(v*100).toFixed(1)+'%'}
 async function j(u,o){const r=await fetch(u,o);if(!r.ok)throw new Error(await r.text());return r.json()}
 document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
-function showTab(id){document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.id===id));document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.tab===id));q('#pageTitle').textContent=id[0].toUpperCase()+id.slice(1);if(id==='people')loadPeople();if(id==='events')loadEvents();if(id==='approvals')loadApprovals();if(id==='audit')loadAudit();if(id==='system')loadSystem()}
+function showTab(id){document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.id===id));document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.tab===id));q('#pageTitle').textContent=id[0].toUpperCase()+id.slice(1);if(id==='people')loadPeople();if(id==='events')loadEvents();if(id==='approvals')loadApprovals();if(id==='registration')loadRegistrationInfo();if(id==='audit')loadAudit();if(id==='system')loadSystem()}
 function changeCamera(id){
   cameraId=id;
   const c=cameraMap[id];
@@ -175,6 +175,14 @@ async function reviewEvent(id,status){
   if(q('#approvals').classList.contains('active'))loadApprovals();
   if(q('#events').classList.contains('active'))loadEvents();
   refreshAll();
+}
+async function loadRegistrationInfo(){
+  try{
+    const info=await j('/v1/registration/info');
+    q('#registrationUrl').textContent=info.url;
+  }catch(e){
+    q('#registrationUrl').textContent='Registration link unavailable';
+  }
 }
 async function loadAudit(){
   const rows=await j('/v1/audit?limit=300');

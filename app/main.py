@@ -1,10 +1,11 @@
-import base64, json, os, time, threading, uuid
+import base64, json, os, time, threading, uuid, hashlib, hmac, io, datetime
 from typing import Optional
 import cv2, httpx, psycopg
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+import qrcode
 
 app=FastAPI(title="Codestra FACE-ID",version="1.0.0")
 DB=os.environ["DATABASE_URL"]
@@ -12,6 +13,9 @@ ENGINE=os.getenv("RECOGNITION_ENGINE_URL","http://recognition-engine:8080")
 EVENT_DIR=os.getenv("FACEID_EVENT_DIR","/data/events")
 MATCH_THRESHOLD=float(os.getenv("FACEID_MATCH_THRESHOLD","0.363"))
 EVENT_RETENTION_DAYS=int(os.getenv("FACEID_EVENT_RETENTION_DAYS","30"))
+REGISTRATION_SECRET=os.environ.get("FACEID_REGISTRATION_SECRET","")
+PUBLIC_HOST=os.getenv("FACEID_PUBLIC_HOST","10.0.0.73")
+PUBLIC_PORT=int(os.getenv("FACEID_PUBLIC_PORT","8094"))
 _cleanup_last=0.0
 
 class Enroll(BaseModel):
@@ -32,6 +36,7 @@ class PublicEnroll(BaseModel):
     image_base64: str
     consent_obtained: bool
     consent_text_version: str="2026-09"
+    token: str
 
 class RegistrationDecision(BaseModel):
     action: str
@@ -215,6 +220,35 @@ def startup():
             last=e; time.sleep(1)
     raise last
 
+def _registration_token(day=None):
+    if not REGISTRATION_SECRET:
+        raise HTTPException(503,"registration secret is not configured")
+    day=day or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+    return hmac.new(REGISTRATION_SECRET.encode(),("faceid-registration:"+day).encode(),hashlib.sha256).hexdigest()[:32]
+
+def _valid_registration_token(token:str):
+    today=datetime.datetime.now(datetime.timezone.utc)
+    for delta in (0,1):
+        day=(today-datetime.timedelta(days=delta)).strftime("%Y-%m-%d")
+        if hmac.compare_digest(token or "",_registration_token(day)):
+            return True
+    return False
+
+@app.get("/v1/registration/info")
+def registration_info():
+    token=_registration_token()
+    return {"url":f"http://{PUBLIC_HOST}:{PUBLIC_PORT}/register?token={token}","expires":"daily","country":"DO","id_type":"cedula"}
+
+@app.get("/v1/registration/qr")
+def registration_qr():
+    token=_registration_token()
+    url=f"http://{PUBLIC_HOST}:{PUBLIC_PORT}/register?token={token}"
+    qr=qrcode.QRCode(version=None,box_size=8,border=3,error_correction=qrcode.constants.ERROR_CORRECT_M)
+    qr.add_data(url); qr.make(fit=True)
+    img=qr.make_image(fill_color="black",back_color="white")
+    buf=io.BytesIO(); img.save(buf,format="PNG")
+    return Response(buf.getvalue(),media_type="image/png",headers={"Cache-Control":"no-store"})
+
 @app.middleware("http")
 async def local_admin_boundary(request:Request, call_next):
     path=request.url.path
@@ -227,6 +261,8 @@ async def local_admin_boundary(request:Request, call_next):
 
 @app.post("/v1/public/enroll")
 def public_enroll(req:PublicEnroll):
+    if not _valid_registration_token(req.token):
+        raise HTTPException(403,"invalid or expired registration token")
     if not req.consent_obtained:
         raise HTTPException(400,"explicit consent is required")
     name=req.full_name.strip()
@@ -257,10 +293,12 @@ def public_enroll(req:PublicEnroll):
     return {"submitted":True,"request_id":request_id,"status":"pending_review","display_name":name}
 
 @app.get("/register", response_class=HTMLResponse)
-def registration_page():
+def registration_page(token:str=""):
+    if not _valid_registration_token(token):
+        return HTMLResponse("<h2>Registration link is invalid or expired.</h2>",status_code=403)
     page=os.path.join(os.path.dirname(__file__),"static","register.html")
     with open(page,"r",encoding="utf-8") as f:
-        return HTMLResponse(f.read(),headers={"Cache-Control":"no-store"})
+        return HTMLResponse(f.read().replace("__REG_TOKEN__",token),headers={"Cache-Control":"no-store"})
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard():

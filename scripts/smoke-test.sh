@@ -25,7 +25,11 @@ check "registrations" "$BASE/v1/registrations?status=pending" "200"
 check "audit" "$BASE/v1/audit?limit=5" "200"
 check "camera-onvif" "$BASE/v1/cameras/ezviz-main/onvif" "200"
 check "camera-snapshot" "$BASE/v1/cameras/ezviz-main/snapshot" "200"
-check "lan-registration" "$LAN_BASE/register" "200"
+check "registration-qr" "$BASE/v1/registration/qr" "200"
+
+REG_URL="$(curl -fsS "$BASE/v1/registration/info" | python3 -c 'import json,sys; print(json.load(sys.stdin)["url"])')"
+check "lan-registration" "$REG_URL" "200"
+check "lan-register-no-token" "$LAN_BASE/register" "403"
 check "lan-admin-denied" "$LAN_BASE/" "403"
 
 echo "FACE-ID smoke test: PASS"

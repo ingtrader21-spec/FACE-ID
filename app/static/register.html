@@ -34,7 +34,7 @@
   <div class="footer">Codestra FACE-ID • Local network registration</div>
 </div>
 <script>
-const $=s=>document.querySelector(s);
+const $=s=>document.querySelector(s);const REG_TOKEN='__REG_TOKEN__';
 function setStatus(msg,ok){const s=$('#status');s.textContent=msg;s.className='status show '+(ok?'ok':'bad')}
 function digits(v){return String(v||'').replace(/\D/g,'')}
 function formatCedula(v){const d=digits(v).slice(0,11);if(d.length<=3)return d;if(d.length<=10)return d.slice(0,3)+'-'+d.slice(3);return d.slice(0,3)+'-'+d.slice(3,10)+'-'+d.slice(10)}
@@ -86,7 +86,8 @@ async function submitRegistration(){
       id_last4:id.slice(-4),
       image_base64:image,
       consent_obtained:true,
-      consent_text_version:'2026-09'
+      consent_text_version:'2026-09',
+      token:REG_TOKEN
     })});
     const out=await r.json();
     if(!r.ok)throw new Error(out.detail||out.error||'Registration failed');
