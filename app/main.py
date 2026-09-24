@@ -47,6 +47,58 @@ class EventReview(BaseModel):
     note: Optional[str]=None
     subject_id: Optional[str]=None
 
+
+
+class ZoneIn(BaseModel):
+    zone_id: str
+    name: str
+    description: Optional[str]=None
+    enabled: bool=True
+
+class AccessPolicyIn(BaseModel):
+    policy_id: str
+    name: str
+    subject_id: Optional[str]=None
+    zone_id: str
+    allowed: bool=True
+    schedule: dict=Field(default_factory=dict)
+    enabled: bool=True
+
+class VisitorPassIn(BaseModel):
+    pass_id: str
+    display_name: str
+    host_subject_id: Optional[str]=None
+    valid_from: str
+    valid_until: str
+    registration_request_id: Optional[str]=None
+    status: str="active"
+
+class AlertRuleIn(BaseModel):
+    rule_id: str
+    name: str
+    event_type: str
+    camera_id: Optional[str]=None
+    delivery_channel: str="browser"
+    recipient_ref: Optional[str]=None
+    enabled: bool=True
+
+class IncidentIn(BaseModel):
+    incident_id: str
+    title: str
+    severity: str="medium"
+    status: str="open"
+    event_ids: list[str]=Field(default_factory=list)
+    notes: Optional[str]=None
+
+class RetentionPolicyIn(BaseModel):
+    policy_id: str
+    resource_type: str
+    days: int=Field(ge=1,le=3650)
+    enabled: bool=True
+
+class SubjectLabelsIn(BaseModel):
+    labels: list[str]=Field(default_factory=list)
+
 class CameraIn(BaseModel):
     camera_id: str
     name: str
@@ -94,6 +146,65 @@ def init_db():
           target_id text,
           details jsonb not null default '{}'::jsonb,
           occurred_at timestamptz not null default now())""")
+
+        c.execute("""create table if not exists zones(
+          zone_id text primary key,
+          name text not null,
+          description text,
+          enabled boolean not null default true,
+          created_at timestamptz not null default now(),
+          updated_at timestamptz not null default now())""")
+        c.execute("""create table if not exists access_policies(
+          policy_id text primary key,
+          name text not null,
+          subject_id text,
+          zone_id text not null,
+          allowed boolean not null default true,
+          schedule jsonb not null default '{}'::jsonb,
+          enabled boolean not null default true,
+          created_at timestamptz not null default now(),
+          updated_at timestamptz not null default now())""")
+        c.execute("""create table if not exists visitor_passes(
+          pass_id text primary key,
+          display_name text not null,
+          host_subject_id text,
+          valid_from timestamptz not null,
+          valid_until timestamptz not null,
+          registration_request_id text,
+          status text not null default 'active',
+          created_at timestamptz not null default now(),
+          updated_at timestamptz not null default now())""")
+        c.execute("""create table if not exists alert_rules(
+          rule_id text primary key,
+          name text not null,
+          event_type text not null,
+          camera_id text,
+          delivery_channel text not null,
+          recipient_ref text,
+          enabled boolean not null default true,
+          created_at timestamptz not null default now(),
+          updated_at timestamptz not null default now())""")
+        c.execute("""create table if not exists incidents(
+          incident_id text primary key,
+          title text not null,
+          severity text not null,
+          status text not null,
+          event_ids jsonb not null default '[]'::jsonb,
+          notes text,
+          created_at timestamptz not null default now(),
+          updated_at timestamptz not null default now())""")
+        c.execute("""create table if not exists retention_policies(
+          policy_id text primary key,
+          resource_type text not null unique,
+          days int not null,
+          enabled boolean not null default true,
+          created_at timestamptz not null default now(),
+          updated_at timestamptz not null default now())""")
+        c.execute("""create table if not exists subject_labels(
+          subject_id text not null,
+          label text not null,
+          created_at timestamptz not null default now(),
+          primary key(subject_id,label))""")
 
 WORKER_INTERVAL=float(os.getenv("FACEID_WORKER_INTERVAL_SECONDS","2"))
 EVENT_COOLDOWN=float(os.getenv("FACEID_EVENT_COOLDOWN_SECONDS","15"))
@@ -480,6 +591,224 @@ def audit_log(limit:int=200):
         rows=c.execute("""select audit_id,actor,action,target_type,target_id,details,occurred_at
                           from audit_log order by occurred_at desc limit %s""",(limit,)).fetchall()
     return [{"audit_id":r[0],"actor":r[1],"action":r[2],"target_type":r[3],"target_id":r[4],"details":r[5],"occurred_at":r[6]} for r in rows]
+
+
+@app.get("/v1/zones")
+def list_zones():
+    with conn() as c:
+        rows=c.execute("select zone_id,name,description,enabled,created_at,updated_at from zones order by name").fetchall()
+    return [{"zone_id":r[0],"name":r[1],"description":r[2],"enabled":r[3],"created_at":r[4],"updated_at":r[5]} for r in rows]
+
+@app.post("/v1/zones")
+def save_zone(req:ZoneIn):
+    with conn() as c:
+        c.execute("""insert into zones(zone_id,name,description,enabled) values(%s,%s,%s,%s)
+                     on conflict(zone_id) do update set name=excluded.name,description=excluded.description,
+                     enabled=excluded.enabled,updated_at=now()""",(req.zone_id,req.name,req.description,req.enabled))
+    _audit("zone.saved","zone",req.zone_id,{"name":req.name,"enabled":req.enabled})
+    return {"zone_id":req.zone_id,"saved":True}
+
+@app.get("/v1/access-policies")
+def list_access_policies():
+    with conn() as c:
+        rows=c.execute("""select policy_id,name,subject_id,zone_id,allowed,schedule,enabled,created_at,updated_at
+                          from access_policies order by name""").fetchall()
+    return [{"policy_id":r[0],"name":r[1],"subject_id":r[2],"zone_id":r[3],"allowed":r[4],
+             "schedule":r[5],"enabled":r[6],"created_at":r[7],"updated_at":r[8]} for r in rows]
+
+@app.post("/v1/access-policies")
+def save_access_policy(req:AccessPolicyIn):
+    with conn() as c:
+        if not c.execute("select 1 from zones where zone_id=%s",(req.zone_id,)).fetchone():
+            raise HTTPException(400,"zone_id does not exist")
+        if req.subject_id and not c.execute("select 1 from subjects where subject_id=%s",(req.subject_id,)).fetchone():
+            raise HTTPException(400,"subject_id does not exist")
+        c.execute("""insert into access_policies(policy_id,name,subject_id,zone_id,allowed,schedule,enabled)
+                     values(%s,%s,%s,%s,%s,%s::jsonb,%s)
+                     on conflict(policy_id) do update set name=excluded.name,subject_id=excluded.subject_id,
+                     zone_id=excluded.zone_id,allowed=excluded.allowed,schedule=excluded.schedule,
+                     enabled=excluded.enabled,updated_at=now()""",
+                  (req.policy_id,req.name,req.subject_id,req.zone_id,req.allowed,json.dumps(req.schedule),req.enabled))
+    _audit("access_policy.saved","access_policy",req.policy_id,{"zone_id":req.zone_id,"allowed":req.allowed})
+    return {"policy_id":req.policy_id,"saved":True}
+
+@app.get("/v1/visitor-passes")
+def list_visitor_passes():
+    with conn() as c:
+        rows=c.execute("""select pass_id,display_name,host_subject_id,valid_from,valid_until,registration_request_id,status,
+                          created_at,updated_at from visitor_passes order by created_at desc""").fetchall()
+    return [{"pass_id":r[0],"display_name":r[1],"host_subject_id":r[2],"valid_from":r[3],"valid_until":r[4],
+             "registration_request_id":r[5],"status":r[6],"created_at":r[7],"updated_at":r[8]} for r in rows]
+
+@app.post("/v1/visitor-passes")
+def save_visitor_pass(req:VisitorPassIn):
+    try:
+        start=datetime.datetime.fromisoformat(req.valid_from.replace("Z","+00:00"))
+        end=datetime.datetime.fromisoformat(req.valid_until.replace("Z","+00:00"))
+    except ValueError:
+        raise HTTPException(400,"valid_from and valid_until must be ISO-8601 timestamps")
+    if end <= start:
+        raise HTTPException(400,"valid_until must be after valid_from")
+    with conn() as c:
+        if req.host_subject_id and not c.execute("select 1 from subjects where subject_id=%s",(req.host_subject_id,)).fetchone():
+            raise HTTPException(400,"host_subject_id does not exist")
+        c.execute("""insert into visitor_passes(pass_id,display_name,host_subject_id,valid_from,valid_until,registration_request_id,status)
+                     values(%s,%s,%s,%s,%s,%s,%s)
+                     on conflict(pass_id) do update set display_name=excluded.display_name,
+                     host_subject_id=excluded.host_subject_id,valid_from=excluded.valid_from,valid_until=excluded.valid_until,
+                     registration_request_id=excluded.registration_request_id,status=excluded.status,updated_at=now()""",
+                  (req.pass_id,req.display_name,req.host_subject_id,start,end,req.registration_request_id,req.status))
+    _audit("visitor_pass.saved","visitor_pass",req.pass_id,{"display_name":req.display_name,"status":req.status})
+    return {"pass_id":req.pass_id,"saved":True}
+
+@app.get("/v1/alert-rules")
+def list_alert_rules():
+    with conn() as c:
+        rows=c.execute("""select rule_id,name,event_type,camera_id,delivery_channel,recipient_ref,enabled,created_at,updated_at
+                          from alert_rules order by name""").fetchall()
+    return [{"rule_id":r[0],"name":r[1],"event_type":r[2],"camera_id":r[3],"delivery_channel":r[4],
+             "recipient_ref":r[5],"enabled":r[6],"created_at":r[7],"updated_at":r[8]} for r in rows]
+
+@app.post("/v1/alert-rules")
+def save_alert_rule(req:AlertRuleIn):
+    allowed_channels={"browser","email","sms","webhook"}
+    if req.delivery_channel not in allowed_channels:
+        raise HTTPException(400,"unsupported delivery_channel")
+    with conn() as c:
+        if req.camera_id and not c.execute("select 1 from cameras where camera_id=%s",(req.camera_id,)).fetchone():
+            raise HTTPException(400,"camera_id does not exist")
+        c.execute("""insert into alert_rules(rule_id,name,event_type,camera_id,delivery_channel,recipient_ref,enabled)
+                     values(%s,%s,%s,%s,%s,%s,%s)
+                     on conflict(rule_id) do update set name=excluded.name,event_type=excluded.event_type,
+                     camera_id=excluded.camera_id,delivery_channel=excluded.delivery_channel,
+                     recipient_ref=excluded.recipient_ref,enabled=excluded.enabled,updated_at=now()""",
+                  (req.rule_id,req.name,req.event_type,req.camera_id,req.delivery_channel,req.recipient_ref,req.enabled))
+    _audit("alert_rule.saved","alert_rule",req.rule_id,{"event_type":req.event_type,"channel":req.delivery_channel})
+    return {"rule_id":req.rule_id,"saved":True}
+
+@app.get("/v1/incidents")
+def list_incidents():
+    with conn() as c:
+        rows=c.execute("""select incident_id,title,severity,status,event_ids,notes,created_at,updated_at
+                          from incidents order by updated_at desc""").fetchall()
+    return [{"incident_id":r[0],"title":r[1],"severity":r[2],"status":r[3],"event_ids":r[4],
+             "notes":r[5],"created_at":r[6],"updated_at":r[7]} for r in rows]
+
+@app.post("/v1/incidents")
+def save_incident(req:IncidentIn):
+    if req.severity not in {"low","medium","high","critical"}:
+        raise HTTPException(400,"unsupported severity")
+    if req.status not in {"open","investigating","resolved","closed"}:
+        raise HTTPException(400,"unsupported status")
+    with conn() as c:
+        if req.event_ids:
+            found={r[0] for r in c.execute("select event_id from events where event_id = any(%s)",(req.event_ids,)).fetchall()}
+            missing=[x for x in req.event_ids if x not in found]
+            if missing:
+                raise HTTPException(400,"one or more event_ids do not exist")
+        c.execute("""insert into incidents(incident_id,title,severity,status,event_ids,notes)
+                     values(%s,%s,%s,%s,%s::jsonb,%s)
+                     on conflict(incident_id) do update set title=excluded.title,severity=excluded.severity,
+                     status=excluded.status,event_ids=excluded.event_ids,notes=excluded.notes,updated_at=now()""",
+                  (req.incident_id,req.title,req.severity,req.status,json.dumps(req.event_ids),req.notes))
+    _audit("incident.saved","incident",req.incident_id,{"severity":req.severity,"status":req.status})
+    return {"incident_id":req.incident_id,"saved":True}
+
+@app.get("/v1/retention-policies")
+def list_retention_policies():
+    with conn() as c:
+        rows=c.execute("""select policy_id,resource_type,days,enabled,created_at,updated_at
+                          from retention_policies order by resource_type""").fetchall()
+    return [{"policy_id":r[0],"resource_type":r[1],"days":r[2],"enabled":r[3],"created_at":r[4],"updated_at":r[5]} for r in rows]
+
+@app.post("/v1/retention-policies")
+def save_retention_policy(req:RetentionPolicyIn):
+    allowed={"events","event_snapshots","visitors","incidents","audit"}
+    if req.resource_type not in allowed:
+        raise HTTPException(400,"unsupported resource_type")
+    with conn() as c:
+        c.execute("""insert into retention_policies(policy_id,resource_type,days,enabled) values(%s,%s,%s,%s)
+                     on conflict(policy_id) do update set resource_type=excluded.resource_type,days=excluded.days,
+                     enabled=excluded.enabled,updated_at=now()""",(req.policy_id,req.resource_type,req.days,req.enabled))
+    _audit("retention_policy.saved","retention_policy",req.policy_id,{"resource_type":req.resource_type,"days":req.days})
+    return {"policy_id":req.policy_id,"saved":True}
+
+@app.get("/v1/subjects/{subject_id}/labels")
+def get_subject_labels(subject_id:str):
+    with conn() as c:
+        if not c.execute("select 1 from subjects where subject_id=%s",(subject_id,)).fetchone():
+            raise HTTPException(404,"subject not found")
+        rows=c.execute("select label,created_at from subject_labels where subject_id=%s order by label",(subject_id,)).fetchall()
+    return [{"label":r[0],"created_at":r[1]} for r in rows]
+
+@app.put("/v1/subjects/{subject_id}/labels")
+def set_subject_labels(subject_id:str, req:SubjectLabelsIn):
+    labels=sorted({x.strip().lower() for x in req.labels if x.strip()})
+    if any(len(x)>64 for x in labels):
+        raise HTTPException(400,"labels must be 64 characters or fewer")
+    with conn() as c:
+        if not c.execute("select 1 from subjects where subject_id=%s",(subject_id,)).fetchone():
+            raise HTTPException(404,"subject not found")
+        c.execute("delete from subject_labels where subject_id=%s",(subject_id,))
+        for label in labels:
+            c.execute("insert into subject_labels(subject_id,label) values(%s,%s)",(subject_id,label))
+    _audit("subject.labels_updated","subject",subject_id,{"labels":labels})
+    return {"subject_id":subject_id,"labels":labels}
+
+@app.get("/v1/privacy/subjects/{subject_id}/export")
+def privacy_export(subject_id:str):
+    with conn() as c:
+        s=c.execute("""select subject_id,display_name,consent_obtained,consent_reference,retention_days,created_at,updated_at,
+                       id_country,id_type,id_last4,enrollment_source from subjects where subject_id=%s""",(subject_id,)).fetchone()
+        if not s:
+            raise HTTPException(404,"subject not found")
+        labels=[r[0] for r in c.execute("select label from subject_labels where subject_id=%s order by label",(subject_id,)).fetchall()]
+        events=c.execute("""select event_id,camera_id,score,event_type,occurred_at,review_status
+                            from events where subject_id=%s or reviewed_subject_id=%s order by occurred_at desc limit 1000""",
+                         (subject_id,subject_id)).fetchall()
+    _audit("privacy.exported","subject",subject_id)
+    return {"subject":{"subject_id":s[0],"display_name":s[1],"consent_obtained":s[2],"consent_reference":s[3],
+            "retention_days":s[4],"created_at":s[5],"updated_at":s[6],"id_country":s[7],"id_type":s[8],
+            "id_last4":s[9],"enrollment_source":s[10],"labels":labels},
+            "events":[{"event_id":e[0],"camera_id":e[1],"score":e[2],"event_type":e[3],"occurred_at":e[4],"review_status":e[5]} for e in events]}
+
+@app.delete("/v1/privacy/subjects/{subject_id}")
+def privacy_delete(subject_id:str):
+    snapshot_paths=[]
+    with conn() as c:
+        exists=c.execute("select 1 from subjects where subject_id=%s",(subject_id,)).fetchone()
+        if not exists:
+            raise HTTPException(404,"subject not found")
+        snapshot_paths=[r[0] for r in c.execute("select snapshot_path from events where subject_id=%s and snapshot_path is not null",(subject_id,)).fetchall()]
+        c.execute("delete from subject_labels where subject_id=%s",(subject_id,))
+        c.execute("update events set subject_id=null,reviewed_subject_id=null where subject_id=%s or reviewed_subject_id=%s",(subject_id,subject_id))
+        c.execute("delete from access_policies where subject_id=%s",(subject_id,))
+        c.execute("update visitor_passes set host_subject_id=null where host_subject_id=%s",(subject_id,))
+        c.execute("delete from subjects where subject_id=%s",(subject_id,))
+    for path in snapshot_paths:
+        try:
+            if path and os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+    _audit("privacy.deleted","subject",subject_id)
+    return {"subject_id":subject_id,"deleted":True}
+
+@app.get("/v1/integrations/status")
+def integrations_status():
+    engine={"ready":False}
+    try:
+        r=httpx.get(ENGINE+"/readyz",timeout=3)
+        engine={"ready":r.is_success,"status_code":r.status_code}
+    except Exception:
+        pass
+    with conn() as c:
+        cams=c.execute("select count(*) from cameras where enabled=true").fetchone()[0]
+    return {"middleware_authority":"Caddy -> Kong -> Middleware V3 :8095 -> service API",
+            "recognition_engine":engine,"enabled_cameras":cams,
+            "liveness":{"configured":bool(os.getenv("FACEID_LIVENESS_URL"))},
+            "camera_gateway":{"configured":bool(os.getenv("FACEID_CAMERA_GATEWAY_URL"))},
+            "postgresql_management":{"configured":bool(os.getenv("FACEID_POSTGRESQL_MANAGEMENT_URL"))}}
 
 @app.post("/v1/cameras")
 def camera_add(req:CameraIn):
