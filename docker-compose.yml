@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: faceid-postgres
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - faceid_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL","pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  recognition-engine:
+    build:
+      context: ../InsightFace
+    container_name: faceid-recognition-engine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8091:8080"
+  face-id:
+    build: .
+    container_name: face-id-api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      RECOGNITION_ENGINE_URL: http://recognition-engine:8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+      recognition-engine:
+        condition: service_started
+    ports:
+      - "127.0.0.1:8094:8090"
+volumes:
+  faceid_pg:
