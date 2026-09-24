@@ -380,6 +380,7 @@ def dashboard_data():
 @app.get("/healthz")
 def healthz(): return {"ok":True}
 @app.get("/readyz")
+@app.get("/health/ready")
 def readyz():
     try:
         with conn() as c: c.execute("select 1")
