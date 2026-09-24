@@ -1,8 +1,57 @@
 # Codestra FACE-ID
-Local-first face recognition and camera-ingestion service.
 
-Architecture: EZVIZ / RTSP camera -> FACE-ID API -> Recognition Engine -> PostgreSQL -> events/integrations.
+Local-first face recognition, camera ingestion, enrollment, review, and audit service for Codestra.
 
-Local endpoints: FACE-ID on 127.0.0.1:8094 and recognition engine on 127.0.0.1:8091.
-Camera passwords are never committed. Store the EZVIZ verification/device password in EZVIZ_CAMERA_PASSWORD in .env.
-Enrollment requires explicit consent metadata. Raw biometric images are not stored or logged by default.
+## Architecture
+
+EZVIZ / ONVIF / RTSP camera → FACE-ID API → Recognition Engine → PostgreSQL → dashboard / events / audit.
+
+## Running services
+
+- FACE-ID dashboard/API: http://127.0.0.1:8094
+- LAN self-registration page: http://10.0.0.73:8094/register
+- Recognition engine: http://127.0.0.1:8091
+- PostgreSQL: internal Docker network only
+
+Camera credentials stay in `.env` and are never committed.
+
+## Current capabilities
+
+- live RTSP camera preview
+- ONVIF profile discovery
+- face enrollment with explicit consent
+- face verification and gallery search
+- recognized / unknown event ledger
+- event snapshots
+- unknown-event review workflow
+- QR self-registration for Dominican Republic identity references
+- administrator approval / rejection of QR registrations
+- cédula privacy design: the full number is hashed in the browser before submission
+- people management and retention metadata
+- audit trail for administrative actions
+- event and identity retention cleanup
+- configurable match threshold
+- browser notifications for new unknown-face review items
+- multi-camera selector in the dashboard
+- Prometheus metrics, health, readiness, and OpenAPI documentation
+
+## Security boundary
+
+The administration dashboard is available only from the local desktop boundary. LAN clients can access the registration page and public registration endpoint, but administrative routes are denied.
+
+QR self-registration does **not** verify an identity against Dominican government or JCE records. It stores a cryptographic cédula reference, the last four digits, consent metadata, and a recognition embedding only after administrator approval.
+
+## Privacy
+
+- explicit consent is required for enrollment
+- camera passwords are not returned through APIs
+- the full Dominican cédula number is not sent to FACE-ID by the registration page
+- event snapshots are retained according to the configured event-retention policy
+- enrolled identities are automatically removed when their configured retention period expires
+- registration photos are used to derive embeddings and are not persisted by the registration workflow
+
+## Production limitations
+
+Liveness / presentation-attack detection is currently **not enabled**. The dashboard reports this explicitly. Do not treat FACE-ID as anti-spoof capable until a tested liveness model and calibration gate are added.
+
+External SMS/email/push notification delivery and centralized Keycloak RBAC are not enabled in this local deployment.

@@ -81,17 +81,17 @@ async function submitRegistration(){
   try{
     const hash=await sha256(id),image=await fileToBase64(file);
     const r=await fetch('/v1/public/enroll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-      subject_id:'do-'+hash.slice(0,16),
-      display_name:name,
+      full_name:name,
+      id_hash:hash,
+      id_last4:id.slice(-4),
       image_base64:image,
       consent_obtained:true,
-      consent_reference:'qr-do-self-registration:sha256='+hash+':last4='+id.slice(-4),
-      retention_days:365
+      consent_text_version:'2026-09'
     })});
     const out=await r.json();
     if(!r.ok)throw new Error(out.detail||out.error||'Registration failed');
-    setStatus('Registration complete. Your FACE-ID profile is active.',true);
-    btn.textContent='Registered';
+    setStatus('Registration submitted. An administrator must approve it before recognition is active.',true);
+    btn.textContent='Submitted';
   }catch(e){
     setStatus(String(e.message||e),false);
     btn.disabled=false;btn.textContent='Register';

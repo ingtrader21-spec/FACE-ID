@@ -34,5 +34,8 @@ services:
     ports:
       - "127.0.0.1:8094:8090"
       - "10.0.0.73:8094:8090"
+    volumes:
+      - faceid_events:/data/events
 volumes:
   faceid_pg:
+  faceid_events:
