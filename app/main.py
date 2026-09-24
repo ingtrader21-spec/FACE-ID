@@ -2,7 +2,7 @@ import base64, json, os, time, threading, uuid
 from typing import Optional
 import cv2, httpx, psycopg
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
@@ -40,6 +40,9 @@ def init_db():
 WORKER_INTERVAL=float(os.getenv("FACEID_WORKER_INTERVAL_SECONDS","2"))
 EVENT_COOLDOWN=float(os.getenv("FACEID_EVENT_COOLDOWN_SECONDS","15"))
 _last_events={}
+_latest_jpegs={}
+_latest_frame_meta={}
+_frame_lock=threading.Lock()
 
 def _gallery():
     with conn() as c:
@@ -65,8 +68,11 @@ def _process_camera(row):
     cap=cv2.VideoCapture(url,cv2.CAP_FFMPEG)
     ok,frame=cap.read(); cap.release()
     if not ok or frame is None: return
-    ok,jpg=cv2.imencode(".jpg",frame,[int(cv2.IMWRITE_JPEG_QUALITY),80])
+    ok,jpg=cv2.imencode(".jpg",frame,[int(cv2.IMWRITE_JPEG_QUALITY),82])
     if not ok: return
+    with _frame_lock:
+        _latest_jpegs[camera_id]=jpg.tobytes()
+        _latest_frame_meta[camera_id]={"width":int(frame.shape[1]),"height":int(frame.shape[0]),"updated_at":time.time()}
     b64=base64.b64encode(jpg).decode()
     er=httpx.post(ENGINE+"/v1/embeddings",json={"image_base64":b64},timeout=20)
     if er.status_code==422: return
@@ -109,6 +115,79 @@ def startup():
         except Exception as e:
             last=e; time.sleep(1)
     raise last
+
+@app.get("/", response_class=HTMLResponse)
+def dashboard():
+    page=os.path.join(os.path.dirname(__file__),"static","dashboard.html")
+    with open(page,"r",encoding="utf-8") as f:
+        return HTMLResponse(f.read())
+
+def _camera_row(camera_id:str):
+    with conn() as c:
+        row=c.execute("select camera_id,name,host,rtsp_path,username,password_env,enabled from cameras where camera_id=%s",(camera_id,)).fetchone()
+    if not row: raise HTTPException(404,"camera not found")
+    return row
+
+def _read_camera_jpeg(camera_id:str):
+    with _frame_lock:
+        cached=_latest_jpegs.get(camera_id)
+        meta=_latest_frame_meta.get(camera_id)
+        if cached and meta and time.time()-meta.get("updated_at",0)<5:
+            return cached,meta
+    _,name,host,path,user,pwenv,enabled=_camera_row(camera_id)
+    pw=os.getenv(pwenv)
+    if not pw: raise HTTPException(424,f"required secret environment variable {pwenv} is not set")
+    url=f"rtsp://{user}:{pw}@{host}:554{path}"
+    cap=cv2.VideoCapture(url,cv2.CAP_FFMPEG)
+    ok,frame=cap.read(); cap.release()
+    if not ok or frame is None: raise HTTPException(502,"unable to read RTSP frame")
+    ok,jpg=cv2.imencode(".jpg",frame,[int(cv2.IMWRITE_JPEG_QUALITY),82])
+    if not ok: raise HTTPException(500,"unable to encode camera frame")
+    data=jpg.tobytes()
+    meta={"width":int(frame.shape[1]),"height":int(frame.shape[0]),"updated_at":time.time()}
+    with _frame_lock:
+        _latest_jpegs[camera_id]=data
+        _latest_frame_meta[camera_id]=meta
+    return data,meta
+
+@app.get("/v1/cameras/{camera_id}/snapshot")
+def camera_snapshot(camera_id:str):
+    data,_=_read_camera_jpeg(camera_id)
+    return Response(content=data,media_type="image/jpeg",headers={"Cache-Control":"no-store, no-cache, must-revalidate"})
+
+@app.get("/v1/cameras/{camera_id}/stream.mjpg")
+def camera_mjpeg(camera_id:str):
+    _camera_row(camera_id)
+    def frames():
+        while True:
+            try:
+                with _frame_lock:
+                    data=_latest_jpegs.get(camera_id)
+                if not data:
+                    data,_=_read_camera_jpeg(camera_id)
+                yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "+str(len(data)).encode()+b"\r\n\r\n"+data+b"\r\n"
+            except Exception:
+                pass
+            time.sleep(.35)
+    return StreamingResponse(frames(),media_type="multipart/x-mixed-replace; boundary=frame",headers={"Cache-Control":"no-store"})
+
+@app.get("/v1/dashboard")
+def dashboard_data():
+    with conn() as c:
+        subjects_count=c.execute("select count(*) from subjects").fetchone()[0]
+        events_count=c.execute("select count(*) from events").fetchone()[0]
+        recognized_count=c.execute("select count(*) from events where event_type='recognized_face'").fetchone()[0]
+        unknown_count=c.execute("select count(*) from events where event_type='unknown_face'").fetchone()[0]
+        cams=c.execute("select camera_id,name,host,enabled from cameras order by camera_id").fetchall()
+        recent=c.execute("""select e.event_id,e.camera_id,e.subject_id,e.score,e.event_type,e.occurred_at,e.metadata,s.display_name
+                            from events e left join subjects s on s.subject_id=e.subject_id
+                            order by e.occurred_at desc limit 12""").fetchall()
+    with _frame_lock:
+        frame_meta=dict(_latest_frame_meta)
+    return {"stats":{"subjects":subjects_count,"events":events_count,"recognized":recognized_count,"unknown":unknown_count},
+            "cameras":[{"camera_id":r[0],"name":r[1],"host":r[2],"enabled":r[3],"frame":frame_meta.get(r[0])} for r in cams],
+            "recent":[{"event_id":r[0],"camera_id":r[1],"subject_id":r[2],"score":r[3],"event_type":r[4],"occurred_at":r[5],"metadata":r[6],"display_name":r[7]} for r in recent]}
+
 @app.get("/healthz")
 def healthz(): return {"ok":True}
 @app.get("/readyz")
