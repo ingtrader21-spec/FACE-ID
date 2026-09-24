@@ -1,0 +1,16 @@
+services:
+  api:
+    build: .
+    ports: ["8080:8080"]
+    environment:
+      DATABASE_URL: postgresql://codestra:codestra@db:5432/faceid
+    depends_on: [db]
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: codestra
+      POSTGRES_PASSWORD: codestra
+      POSTGRES_DB: faceid
+    volumes: [faceid_db:/var/lib/postgresql/data]
+volumes:
+  faceid_db:
