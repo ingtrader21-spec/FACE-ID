@@ -173,6 +173,51 @@ def camera_list():
 def camera_delete(camera_id:str):
     with conn() as c: c.execute("delete from cameras where camera_id=%s",(camera_id,))
     return {"deleted":True,"camera_id":camera_id}
+
+@app.get("/v1/cameras/{camera_id}/onvif")
+def camera_onvif(camera_id:str):
+    with conn() as c:
+        row=c.execute("select host,username,password_env from cameras where camera_id=%s",(camera_id,)).fetchone()
+    if not row: raise HTTPException(404,"camera not found")
+    host,user,pwenv=row
+    pw=os.getenv(pwenv)
+    if not pw: raise HTTPException(424,f"required secret environment variable {pwenv} is not set")
+    auth=httpx.DigestAuth(user,pw)
+    headers_profiles={"Content-Type":'application/soap+xml; charset=utf-8; action="http://www.onvif.org/ver10/media/wsdl/GetProfiles"'}
+    body_profiles='<?xml version="1.0" encoding="UTF-8"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body><trt:GetProfiles xmlns:trt="http://www.onvif.org/ver10/media/wsdl"/></s:Body></s:Envelope>'
+    try:
+        rp=httpx.post(f"http://{host}/onvif/Media",content=body_profiles,headers=headers_profiles,auth=auth,timeout=10)
+    except Exception as e:
+        raise HTTPException(502,f"ONVIF GetProfiles failed: {type(e).__name__}")
+    if rp.status_code != 200:
+        raise HTTPException(rp.status_code,"ONVIF GetProfiles rejected")
+    import xml.etree.ElementTree as ET
+    root=ET.fromstring(rp.text)
+    ns={"trt":"http://www.onvif.org/ver10/media/wsdl","tt":"http://www.onvif.org/ver10/schema"}
+    profiles=[]
+    for pr in root.findall(".//trt:Profiles",ns):
+        token=pr.attrib.get("token")
+        name_el=pr.find("tt:Name",ns)
+        enc=pr.find("tt:VideoEncoderConfiguration",ns)
+        item={"token":token,"name":name_el.text if name_el is not None else None}
+        if enc is not None:
+            encname=enc.find("tt:Encoding",ns)
+            res=enc.find("tt:Resolution",ns)
+            item["encoding"]=encname.text if encname is not None else None
+            if res is not None:
+                w=res.find("tt:Width",ns); h=res.find("tt:Height",ns)
+                item["width"]=int(w.text) if w is not None else None
+                item["height"]=int(h.text) if h is not None else None
+        uri_body=f'<?xml version="1.0" encoding="UTF-8"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body><trt:GetStreamUri xmlns:trt="http://www.onvif.org/ver10/media/wsdl"><trt:StreamSetup><tt:Stream xmlns:tt="http://www.onvif.org/ver10/schema">RTP-Unicast</tt:Stream><tt:Transport xmlns:tt="http://www.onvif.org/ver10/schema"><tt:Protocol>RTSP</tt:Protocol></tt:Transport></trt:StreamSetup><trt:ProfileToken>{token}</trt:ProfileToken></trt:GetStreamUri></s:Body></s:Envelope>'
+        headers_uri={"Content-Type":'application/soap+xml; charset=utf-8; action="http://www.onvif.org/ver10/media/wsdl/GetStreamUri"'}
+        ru=httpx.post(f"http://{host}/onvif/Media",content=uri_body,headers=headers_uri,auth=auth,timeout=10)
+        if ru.status_code==200:
+            rr=ET.fromstring(ru.text)
+            uri_el=rr.find(".//tt:Uri",ns)
+            if uri_el is not None: item["rtsp_uri"]=uri_el.text
+        profiles.append(item)
+    return {"camera_id":camera_id,"profiles":profiles}
+
 @app.post("/v1/streams/{camera_id}/test")
 def stream_test(camera_id:str):
     with conn() as c: row=c.execute("select host,rtsp_path,username,password_env from cameras where camera_id=%s",(camera_id,)).fetchone()
