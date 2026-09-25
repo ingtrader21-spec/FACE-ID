@@ -34,6 +34,18 @@ Camera credentials stay in `.env` and are never committed.
 - browser notifications for new unknown-face review items
 - multi-camera selector in the dashboard
 - Prometheus metrics, health, readiness, and OpenAPI documentation
+- zones, access policies, visitor passes, alert rules, incidents, retention policies, labels, privacy export/delete (Missions 11-20)
+- decision-only access evaluation with reason codes — never actuates doors or hardware (Mission 21)
+- idempotent presence sessions and zone occupancy (Mission 22)
+- operator-owned unknown clusters — a cluster label is not an identity (Mission 23)
+- camera-to-zone mapping metadata (Mission 24)
+- review queues with opaque assignee references (Mission 25)
+
+See `docs/MISSIONS_11_20_API_FLOW.md` and `docs/MISSIONS_21_25_API_FLOW.md`.
+
+## Tests
+
+`scripts/run-tests.sh` runs the pytest suite inside the service image against a dedicated `faceid_test` database. `scripts/smoke-test.sh` checks the running service.
 
 ## Security boundary
 
