@@ -7,6 +7,7 @@ from fastapi.responses import PlainTextResponse, HTMLResponse, Response, Streami
 from pydantic import BaseModel, ConfigDict, Field
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 import qrcode
+from app.id_document import scan_license
 
 app=FastAPI(title="Codestra FACE-ID",version="1.1.0")
 DB=os.environ["DATABASE_URL"]
@@ -248,6 +249,32 @@ class ReembeddingCompleteIn(BaseModel):
     consent_obtained: bool
     consent_reference: Optional[str]=Field(default=None,max_length=200)
 
+
+class IdDocumentScanIn(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    front_image_base64: str=Field(min_length=1)
+    back_image_base64: Optional[str]=None
+
+class IdDocumentConfirmIn(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    fields: dict
+    operator_confirmed: bool
+    operator_ref: Optional[str]=None
+    note: Optional[str]=Field(default=None,max_length=2000)
+
+class ClientFromScanIn(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    scan_id: str
+    client_id: Optional[str]=None
+    operator_ref: Optional[str]=None
+
+class ClientFaceEnrollIn(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    image_base64: str=Field(min_length=1)
+    consent_obtained: bool
+    consent_reference: str=Field(min_length=1,max_length=200)
+    retention_days: int=Field(default=365,ge=1,le=3650)
+
 def conn(): return psycopg.connect(DB)
 def init_db():
     with conn() as c:
@@ -345,6 +372,39 @@ def init_db():
           label text not null,
           created_at timestamptz not null default now(),
           primary key(subject_id,label))""")
+
+
+        c.execute("""create table if not exists id_scan_sessions(
+          scan_id text primary key,
+          document_type text not null,
+          country text not null,
+          status text not null default 'scanned',
+          fields jsonb not null default '{}'::jsonb,
+          document_hash text,
+          document_last4 text,
+          authority_lookup_hash text,
+          warnings jsonb not null default '[]'::jsonb,
+          operator_ref text,
+          confirmation_note text,
+          created_at timestamptz not null default now(),
+          confirmed_at timestamptz)""")
+        c.execute("""create table if not exists clients(
+          client_id text primary key,
+          display_name text not null,
+          country text not null,
+          document_type text not null,
+          document_hash text not null unique,
+          document_last4 text,
+          attributes jsonb not null default '{}'::jsonb,
+          id_scan_id text,
+          source text not null default 'id-scan',
+          subject_id text,
+          created_at timestamptz not null default now(),
+          updated_at timestamptz not null default now())""")
+        c.execute("""create table if not exists client_subject_links(
+          client_id text primary key,
+          subject_id text not null unique,
+          linked_at timestamptz not null default now())""")
         c.execute("""create table if not exists camera_zones(
           mapping_id text primary key,
           camera_id text not null,
@@ -838,8 +898,151 @@ def capabilities(): return {"camera_ingest":["rtsp","onvif"],"recognition":["enr
     "enrollment_sessions":{"endpoint":"/v1/enrollment-sessions","multi_image":True,"quality_thresholds":_quality_thresholds(),"aggregation_method":_AGGREGATION_METHOD,"images_persisted":False,"liveness":False},
     "duplicate_candidates":{"endpoint":"/v1/duplicate-candidates","threshold":DUPLICATE_THRESHOLD,"recognition_threshold":MATCH_THRESHOLD,"max_candidates":DUPLICATE_MAX_CANDIDATES,"auto_merge":False,"identity_assertion":False},
     "model_registry":{"endpoints":["/v1/models","/v1/models/current","/v1/models/migration-status","/v1/reembedding-jobs"],"registry_read_only":True,"automatic_migration":False,"digest_kind":"descriptor-sha256","embedding_history_retention_days":EMBEDDING_HISTORY_DAYS},
+    "id_document_scan":{"scan_endpoint":"/v1/id-documents/scan","confirm_endpoint":"/v1/id-documents/{scan_id}/confirm","client_endpoint":"/v1/clients/from-id-scan","persists_raw_document_images":False,"authority_lookup":"transient-allowlisted-qr","identity_verification":False},
+    "client_database":{"endpoint":"/v1/clients","face_enrollment":"/v1/clients/{client_id}/face-enrollment","requires_explicit_biometric_consent":True,"document_photo_auto_enrollment":False},
     "audit_export":{"endpoint":"/v1/audit/export","retention_endpoint":"/v1/audit/retention","max_range_days":AUDIT_EXPORT_MAX_DAYS,"max_page_size":1000,"redaction_policy":_REDACTION_POLICY,"integrity":"sha256 record digests + hash chain","signed":bool(AUDIT_EXPORT_HMAC_KEY)},
     "middleware_authority":"Caddy -> Kong -> Middleware V3 :8095 -> service API"}
+
+@app.post("/v1/id-documents/scan")
+def scan_id_document(req:IdDocumentScanIn):
+    try:
+        result=scan_license(req.front_image_base64,req.back_image_base64)
+    except ValueError as e:
+        raise HTTPException(400,str(e))
+    except RuntimeError as e:
+        raise HTTPException(503,str(e))
+    fields=result["fields"]
+    persisted_fields={k:v for k,v in fields.items() if k!="document_number"}
+    scan_id=str(uuid.uuid4())
+    with conn() as c:
+        c.execute("""insert into id_scan_sessions(scan_id,document_type,country,status,fields,document_hash,document_last4,
+                     authority_lookup_hash,warnings) values(%s,'driver_license','DO','scanned',%s::jsonb,%s,%s,%s,%s::jsonb)""",
+                  (scan_id,json.dumps(persisted_fields),result.get("document_hash"),result.get("document_last4"),
+                   result.get("authority_lookup_hash"),json.dumps(result.get("warnings",[]))))
+    _audit("id_document.scanned","id_scan",scan_id,{
+        "document_type":"driver_license","country":"DO","document_last4":result.get("document_last4"),
+        "warnings":result.get("warnings",[]),"raw_images_persisted":False})
+    return {
+        "scan_id":scan_id,
+        "status":"scanned",
+        "fields":fields,
+        "warnings":result.get("warnings",[]),
+        "authority_lookup_url":result.get("authority_lookup_url"),
+        "ocr":{"front":result.get("ocr_front",""),"back":result.get("ocr_back","")},
+        "notice":"OCR/QR extraction is an intake aid, not government identity verification. Operator review is required."
+    }
+
+@app.get("/v1/id-documents/{scan_id}")
+def get_id_document_scan(scan_id:str):
+    with conn() as c:
+        r=c.execute("""select scan_id,document_type,country,status,fields,document_last4,warnings,operator_ref,
+                      confirmation_note,created_at,confirmed_at from id_scan_sessions where scan_id=%s""",(scan_id,)).fetchone()
+    if not r: raise HTTPException(404,"scan not found")
+    return {"scan_id":r[0],"document_type":r[1],"country":r[2],"status":r[3],"fields":r[4],
+            "document_last4":r[5],"warnings":r[6],"operator_ref":r[7],"confirmation_note":r[8],
+            "created_at":r[9],"confirmed_at":r[10]}
+
+@app.post("/v1/id-documents/{scan_id}/confirm")
+def confirm_id_document(scan_id:str, req:IdDocumentConfirmIn):
+    if not req.operator_confirmed:
+        raise HTTPException(400,"operator_confirmed must be true")
+    fields={str(k):v for k,v in req.fields.items()}
+    full_name=str(fields.get("full_name","")).strip()
+    number=re.sub(r"\D","",str(fields.get("document_number","")))
+    if len(full_name)<3:
+        raise HTTPException(400,"full_name is required")
+    if len(number)!=11:
+        raise HTTPException(400,"document_number must contain 11 digits")
+    fields["full_name"]=full_name
+    fields["document_number"]=number
+    doc_hash=hashlib.sha256(("DO|driver_license|"+number).encode()).hexdigest()
+    with conn() as c:
+        r=c.execute("select status from id_scan_sessions where scan_id=%s",(scan_id,)).fetchone()
+        if not r: raise HTTPException(404,"scan not found")
+        if r[0] not in {"scanned","confirmed"}: raise HTTPException(409,"scan cannot be confirmed")
+        persisted_fields={k:v for k,v in fields.items() if k!="document_number"}
+        c.execute("""update id_scan_sessions set status='confirmed',fields=%s::jsonb,document_hash=%s,
+                     document_last4=%s,operator_ref=%s,confirmation_note=%s,confirmed_at=now()
+                     where scan_id=%s""",
+                  (json.dumps(persisted_fields),doc_hash,number[-4:],req.operator_ref,req.note,scan_id))
+    _audit("id_document.confirmed","id_scan",scan_id,{"document_last4":number[-4:],"operator_ref":req.operator_ref})
+    return {"scan_id":scan_id,"status":"confirmed","fields":fields,"document_last4":number[-4:]}
+
+@app.post("/v1/clients/from-id-scan")
+def create_client_from_scan(req:ClientFromScanIn):
+    with conn() as c:
+        row=c.execute("""select status,fields,document_hash,document_last4,country,document_type
+                         from id_scan_sessions where scan_id=%s""",(req.scan_id,)).fetchone()
+        if not row: raise HTTPException(404,"scan not found")
+        if row[0]!="confirmed": raise HTTPException(409,"scan must be confirmed before creating a client")
+        fields,doc_hash,last4,country,doc_type=row[1],row[2],row[3],row[4],row[5]
+        if not doc_hash: raise HTTPException(409,"confirmed document hash missing")
+        display_name=str(fields.get("full_name","")).strip()
+        client_id=(req.client_id or str(uuid.uuid4())).strip()
+        if not client_id: raise HTTPException(400,"client_id is invalid")
+        existing=c.execute("select client_id from clients where document_hash=%s",(doc_hash,)).fetchone()
+        if existing and existing[0]!=client_id:
+            raise HTTPException(409,"a client already exists for this document")
+        c.execute("""insert into clients(client_id,display_name,country,document_type,document_hash,document_last4,
+                     attributes,id_scan_id,source) values(%s,%s,%s,%s,%s,%s,%s::jsonb,%s,'id-scan')
+                     on conflict(client_id) do update set display_name=excluded.display_name,
+                     document_last4=excluded.document_last4,attributes=excluded.attributes,id_scan_id=excluded.id_scan_id,
+                     updated_at=now()""",
+                  (client_id,display_name,country,doc_type,doc_hash,last4,json.dumps(fields),req.scan_id))
+    _audit("client.created_from_id_scan","client",client_id,{"scan_id":req.scan_id,"document_last4":last4,"operator_ref":req.operator_ref})
+    return {"client_id":client_id,"display_name":display_name,"document_last4":last4,"face_enrolled":False}
+
+@app.get("/v1/clients")
+def list_clients(limit:int=200):
+    limit=max(1,min(limit,1000))
+    with conn() as c:
+        rows=c.execute("""select client_id,display_name,country,document_type,document_last4,attributes,id_scan_id,
+                          source,subject_id,created_at,updated_at from clients order by created_at desc limit %s""",(limit,)).fetchall()
+    return [{"client_id":r[0],"display_name":r[1],"country":r[2],"document_type":r[3],"document_last4":r[4],
+             "attributes":r[5],"id_scan_id":r[6],"source":r[7],"subject_id":r[8],
+             "face_enrolled":bool(r[8]),"created_at":r[9],"updated_at":r[10]} for r in rows]
+
+@app.get("/v1/clients/{client_id}")
+def get_client(client_id:str):
+    with conn() as c:
+        r=c.execute("""select client_id,display_name,country,document_type,document_last4,attributes,id_scan_id,
+                       source,subject_id,created_at,updated_at from clients where client_id=%s""",(client_id,)).fetchone()
+    if not r: raise HTTPException(404,"client not found")
+    return {"client_id":r[0],"display_name":r[1],"country":r[2],"document_type":r[3],"document_last4":r[4],
+            "attributes":r[5],"id_scan_id":r[6],"source":r[7],"subject_id":r[8],
+            "face_enrolled":bool(r[8]),"created_at":r[9],"updated_at":r[10]}
+
+@app.post("/v1/clients/{client_id}/face-enrollment")
+def enroll_client_face(client_id:str, req:ClientFaceEnrollIn):
+    if not req.consent_obtained:
+        raise HTTPException(400,"explicit biometric enrollment consent is required")
+    with conn() as c:
+        row=c.execute("select display_name,subject_id from clients where client_id=%s",(client_id,)).fetchone()
+    if not row: raise HTTPException(404,"client not found")
+    display_name,linked_subject=row
+    subject_id=linked_subject or ("client-"+client_id)
+    er=httpx.post(ENGINE+"/v1/embeddings",json={"image_base64":req.image_base64},timeout=20)
+    if not er.is_success: raise HTTPException(er.status_code,er.text)
+    payload=er.json()
+    emb=payload["embedding"]
+    meta=_try_model_meta()
+    with conn() as c:
+        if meta: _register_model(c,meta,len(emb))
+        _archive_embedding(c,subject_id,"client_face_enrollment")
+        c.execute("""insert into subjects(subject_id,display_name,embedding,consent_obtained,consent_reference,retention_days,
+                     enrollment_source) values(%s,%s,%s::jsonb,true,%s,%s,'client-live-enrollment')
+                     on conflict(subject_id) do update set display_name=excluded.display_name,embedding=excluded.embedding,
+                     consent_obtained=true,consent_reference=excluded.consent_reference,retention_days=excluded.retention_days,
+                     enrollment_source='client-live-enrollment',updated_at=now()""",
+                  (subject_id,display_name,json.dumps(emb),req.consent_reference,req.retention_days))
+        _stamp_subject(c,subject_id,meta,len(emb),"single-image",1)
+        c.execute("""insert into client_subject_links(client_id,subject_id) values(%s,%s)
+                     on conflict(client_id) do update set subject_id=excluded.subject_id,linked_at=now()""",(client_id,subject_id))
+        c.execute("update clients set subject_id=%s,updated_at=now() where client_id=%s",(subject_id,client_id))
+    _audit("client.face_enrolled","client",client_id,{"subject_id":subject_id,"consent_reference":req.consent_reference})
+    return {"client_id":client_id,"subject_id":subject_id,"display_name":display_name,"face_enrolled":True,
+            "notice":"Face enrollment used the supplied consented capture, not the ID-card portrait."}
+
 @app.post("/v1/faces/enroll")
 def enroll(req:Enroll):
     if not req.consent_obtained: raise HTTPException(400,"explicit enrollment consent is required")
