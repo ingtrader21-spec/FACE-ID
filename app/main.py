@@ -7,7 +7,6 @@ from fastapi.responses import PlainTextResponse, HTMLResponse, Response, Streami
 from pydantic import BaseModel, ConfigDict, Field
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 import qrcode
-from app.id_document import scan_license
 
 app=FastAPI(title="Codestra FACE-ID",version="1.1.0")
 DB=os.environ["DATABASE_URL"]
@@ -250,30 +249,44 @@ class ReembeddingCompleteIn(BaseModel):
     consent_reference: Optional[str]=Field(default=None,max_length=200)
 
 
-class IdDocumentScanIn(BaseModel):
-    model_config=ConfigDict(extra="forbid")
-    front_image_base64: str=Field(min_length=1)
-    back_image_base64: Optional[str]=None
-
-class IdDocumentConfirmIn(BaseModel):
-    model_config=ConfigDict(extra="forbid")
-    fields: dict
-    operator_confirmed: bool
-    operator_ref: Optional[str]=None
-    note: Optional[str]=Field(default=None,max_length=2000)
-
-class ClientFromScanIn(BaseModel):
-    model_config=ConfigDict(extra="forbid")
-    scan_id: str
-    client_id: Optional[str]=None
-    operator_ref: Optional[str]=None
-
 class ClientFaceEnrollIn(BaseModel):
     model_config=ConfigDict(extra="forbid")
     image_base64: str=Field(min_length=1)
     consent_obtained: bool
     consent_reference: str=Field(min_length=1,max_length=200)
     retention_days: int=Field(default=365,ge=1,le=3650)
+
+class DocumentRefIn(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    document_type: str
+    country: str
+    number_last4: Optional[str]=None
+    document_hash: Optional[str]=None
+
+class SubjectHintIn(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    given_names: Optional[str]=None
+    surnames: Optional[str]=None
+    full_name: Optional[str]=None
+    date_of_birth: Optional[str]=None
+    sex: Optional[str]=None
+
+class DocumentHandoffIn(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    schema_ref: str
+    scan_id: str
+    tenant_id: str
+    ready: bool
+    status: str
+    document: DocumentRefIn
+    subject: SubjectHintIn
+    portrait_detected: bool=False
+    portrait_side: Optional[str]=None
+    front_image_sha256: Optional[str]=None
+    back_image_sha256: Optional[str]=None
+    client_id: Optional[str]=None
+    operator_ref: Optional[str]=None
+
 
 def conn(): return psycopg.connect(DB)
 def init_db():
@@ -898,99 +911,58 @@ def capabilities(): return {"camera_ingest":["rtsp","onvif"],"recognition":["enr
     "enrollment_sessions":{"endpoint":"/v1/enrollment-sessions","multi_image":True,"quality_thresholds":_quality_thresholds(),"aggregation_method":_AGGREGATION_METHOD,"images_persisted":False,"liveness":False},
     "duplicate_candidates":{"endpoint":"/v1/duplicate-candidates","threshold":DUPLICATE_THRESHOLD,"recognition_threshold":MATCH_THRESHOLD,"max_candidates":DUPLICATE_MAX_CANDIDATES,"auto_merge":False,"identity_assertion":False},
     "model_registry":{"endpoints":["/v1/models","/v1/models/current","/v1/models/migration-status","/v1/reembedding-jobs"],"registry_read_only":True,"automatic_migration":False,"digest_kind":"descriptor-sha256","embedding_history_retention_days":EMBEDDING_HISTORY_DAYS},
-    "id_document_scan":{"scan_endpoint":"/v1/id-documents/scan","confirm_endpoint":"/v1/id-documents/{scan_id}/confirm","client_endpoint":"/v1/clients/from-id-scan","persists_raw_document_images":False,"authority_lookup":"transient-allowlisted-qr","identity_verification":False},
-    "client_database":{"endpoint":"/v1/clients","face_enrollment":"/v1/clients/{client_id}/face-enrollment","requires_explicit_biometric_consent":True,"document_photo_auto_enrollment":False},
+    "document_intelligence":{"ownership":"standalone-external-product","ocr_in_face_id":False,"client_handoff_endpoint":"/v1/clients/from-document-handoff","direct_service_call":False,"middleware_authority":True},
+    "client_database":{"endpoint":"/v1/clients","document_handoff":"/v1/clients/from-document-handoff","face_enrollment":"/v1/clients/{client_id}/face-enrollment","requires_explicit_biometric_consent":True,"document_photo_auto_enrollment":False},
     "audit_export":{"endpoint":"/v1/audit/export","retention_endpoint":"/v1/audit/retention","max_range_days":AUDIT_EXPORT_MAX_DAYS,"max_page_size":1000,"redaction_policy":_REDACTION_POLICY,"integrity":"sha256 record digests + hash chain","signed":bool(AUDIT_EXPORT_HMAC_KEY)},
     "middleware_authority":"Caddy -> Kong -> Middleware V3 :8095 -> service API"}
 
-@app.post("/v1/id-documents/scan")
-def scan_id_document(req:IdDocumentScanIn):
-    try:
-        result=scan_license(req.front_image_base64,req.back_image_base64)
-    except ValueError as e:
-        raise HTTPException(400,str(e))
-    except RuntimeError as e:
-        raise HTTPException(503,str(e))
-    fields=result["fields"]
-    persisted_fields={k:v for k,v in fields.items() if k!="document_number"}
-    scan_id=str(uuid.uuid4())
-    with conn() as c:
-        c.execute("""insert into id_scan_sessions(scan_id,document_type,country,status,fields,document_hash,document_last4,
-                     authority_lookup_hash,warnings) values(%s,'driver_license','DO','scanned',%s::jsonb,%s,%s,%s,%s::jsonb)""",
-                  (scan_id,json.dumps(persisted_fields),result.get("document_hash"),result.get("document_last4"),
-                   result.get("authority_lookup_hash"),json.dumps(result.get("warnings",[]))))
-    _audit("id_document.scanned","id_scan",scan_id,{
-        "document_type":"driver_license","country":"DO","document_last4":result.get("document_last4"),
-        "warnings":result.get("warnings",[]),"raw_images_persisted":False})
-    return {
-        "scan_id":scan_id,
-        "status":"scanned",
-        "fields":fields,
-        "warnings":result.get("warnings",[]),
-        "authority_lookup_url":result.get("authority_lookup_url"),
-        "ocr":{"front":result.get("ocr_front",""),"back":result.get("ocr_back","")},
-        "notice":"OCR/QR extraction is an intake aid, not government identity verification. Operator review is required."
+@app.post("/v1/clients/from-document-handoff")
+def create_client_from_document_handoff(req:DocumentHandoffIn):
+    if req.schema_ref!="codestra.document.face-id-handoff/v1":
+        raise HTTPException(422,"unsupported document handoff schema")
+    if not req.ready or req.status!="confirmed":
+        raise HTTPException(409,"document handoff must be confirmed and ready")
+    doc_hash=(req.document.document_hash or "").strip()
+    last4=(req.document.number_last4 or "").strip()
+    if not doc_hash or len(doc_hash)>160:
+        raise HTTPException(422,"document hash reference is required")
+    if last4 and (len(last4)!=4 or not last4.isdigit()):
+        raise HTTPException(422,"document last4 must contain four digits")
+    full_name=(req.subject.full_name or "").strip()
+    if not full_name:
+        full_name=" ".join(x for x in [(req.subject.given_names or "").strip(),(req.subject.surnames or "").strip()] if x).strip()
+    if len(full_name)<2:
+        raise HTTPException(422,"reviewed subject name is required")
+    attrs={
+        "given_names":req.subject.given_names,
+        "surnames":req.subject.surnames,
+        "full_name":full_name,
+        "date_of_birth":req.subject.date_of_birth,
+        "sex":req.subject.sex,
+        "document_scan_ref":req.scan_id,
+        "document_tenant_ref":req.tenant_id,
+        "portrait_detected":req.portrait_detected,
+        "portrait_side":req.portrait_side,
     }
-
-@app.get("/v1/id-documents/{scan_id}")
-def get_id_document_scan(scan_id:str):
+    client_id=(req.client_id or ("doc-"+hashlib.sha256((req.tenant_id+"|"+req.scan_id).encode()).hexdigest()[:20])).strip()
+    if not client_id:
+        raise HTTPException(422,"client_id is invalid")
     with conn() as c:
-        r=c.execute("""select scan_id,document_type,country,status,fields,document_last4,warnings,operator_ref,
-                      confirmation_note,created_at,confirmed_at from id_scan_sessions where scan_id=%s""",(scan_id,)).fetchone()
-    if not r: raise HTTPException(404,"scan not found")
-    return {"scan_id":r[0],"document_type":r[1],"country":r[2],"status":r[3],"fields":r[4],
-            "document_last4":r[5],"warnings":r[6],"operator_ref":r[7],"confirmation_note":r[8],
-            "created_at":r[9],"confirmed_at":r[10]}
-
-@app.post("/v1/id-documents/{scan_id}/confirm")
-def confirm_id_document(scan_id:str, req:IdDocumentConfirmIn):
-    if not req.operator_confirmed:
-        raise HTTPException(400,"operator_confirmed must be true")
-    fields={str(k):v for k,v in req.fields.items()}
-    full_name=str(fields.get("full_name","")).strip()
-    number=re.sub(r"\D","",str(fields.get("document_number","")))
-    if len(full_name)<3:
-        raise HTTPException(400,"full_name is required")
-    if len(number)!=11:
-        raise HTTPException(400,"document_number must contain 11 digits")
-    fields["full_name"]=full_name
-    fields["document_number"]=number
-    doc_hash=hashlib.sha256(("DO|driver_license|"+number).encode()).hexdigest()
-    with conn() as c:
-        r=c.execute("select status from id_scan_sessions where scan_id=%s",(scan_id,)).fetchone()
-        if not r: raise HTTPException(404,"scan not found")
-        if r[0] not in {"scanned","confirmed"}: raise HTTPException(409,"scan cannot be confirmed")
-        persisted_fields={k:v for k,v in fields.items() if k!="document_number"}
-        c.execute("""update id_scan_sessions set status='confirmed',fields=%s::jsonb,document_hash=%s,
-                     document_last4=%s,operator_ref=%s,confirmation_note=%s,confirmed_at=now()
-                     where scan_id=%s""",
-                  (json.dumps(persisted_fields),doc_hash,number[-4:],req.operator_ref,req.note,scan_id))
-    _audit("id_document.confirmed","id_scan",scan_id,{"document_last4":number[-4:],"operator_ref":req.operator_ref})
-    return {"scan_id":scan_id,"status":"confirmed","fields":fields,"document_last4":number[-4:]}
-
-@app.post("/v1/clients/from-id-scan")
-def create_client_from_scan(req:ClientFromScanIn):
-    with conn() as c:
-        row=c.execute("""select status,fields,document_hash,document_last4,country,document_type
-                         from id_scan_sessions where scan_id=%s""",(req.scan_id,)).fetchone()
-        if not row: raise HTTPException(404,"scan not found")
-        if row[0]!="confirmed": raise HTTPException(409,"scan must be confirmed before creating a client")
-        fields,doc_hash,last4,country,doc_type=row[1],row[2],row[3],row[4],row[5]
-        if not doc_hash: raise HTTPException(409,"confirmed document hash missing")
-        display_name=str(fields.get("full_name","")).strip()
-        client_id=(req.client_id or str(uuid.uuid4())).strip()
-        if not client_id: raise HTTPException(400,"client_id is invalid")
         existing=c.execute("select client_id from clients where document_hash=%s",(doc_hash,)).fetchone()
         if existing and existing[0]!=client_id:
             raise HTTPException(409,"a client already exists for this document")
         c.execute("""insert into clients(client_id,display_name,country,document_type,document_hash,document_last4,
-                     attributes,id_scan_id,source) values(%s,%s,%s,%s,%s,%s,%s::jsonb,%s,'id-scan')
+                     attributes,id_scan_id,source) values(%s,%s,%s,%s,%s,%s,%s::jsonb,%s,'document-intelligence')
                      on conflict(client_id) do update set display_name=excluded.display_name,
                      document_last4=excluded.document_last4,attributes=excluded.attributes,id_scan_id=excluded.id_scan_id,
-                     updated_at=now()""",
-                  (client_id,display_name,country,doc_type,doc_hash,last4,json.dumps(fields),req.scan_id))
-    _audit("client.created_from_id_scan","client",client_id,{"scan_id":req.scan_id,"document_last4":last4,"operator_ref":req.operator_ref})
-    return {"client_id":client_id,"display_name":display_name,"document_last4":last4,"face_enrolled":False}
+                     source='document-intelligence',updated_at=now()""",
+                  (client_id,full_name,req.document.country,req.document.document_type,doc_hash,last4 or None,
+                   json.dumps(attrs),req.scan_id))
+    _audit("client.created_from_document_handoff","client",client_id,{
+        "scan_ref":req.scan_id,"tenant_ref":req.tenant_id,"document_last4":last4 or None,
+        "operator_ref":req.operator_ref,"source":"document-intelligence"})
+    return {"client_id":client_id,"display_name":full_name,"document_last4":last4 or None,
+            "face_enrolled":False,"source":"document-intelligence"}
 
 @app.get("/v1/clients")
 def list_clients(limit:int=200):

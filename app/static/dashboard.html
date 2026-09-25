@@ -25,7 +25,7 @@ main{padding:26px;min-width:0}.top{display:flex;justify-content:space-between;ga
     <button data-tab="events">Events</button>
     <button data-tab="approvals" id="approvalsNav">Approvals</button>
     <button data-tab="registration">Registration QR</button>
-    <button data-tab="clients">ID Scan & Clients</button>
+    <button data-tab="clients">Clients</button>
     <button data-tab="audit">Audit</button>
     <button data-tab="system">System</button>
   </div>
@@ -97,14 +97,10 @@ main{padding:26px;min-width:0}.top{display:flex;justify-content:space-between;ga
   <section class="tab" id="clients">
     <div class="grid layout">
       <div class="card">
-        <div class="section"><h2>Scan Dominican driver licence</h2><span class="muted small">Raw card images are not stored.</span></div>
-        <div style="display:grid;gap:10px">
-          <label class="small">Front image<input id="idFront" type="file" accept="image/*" style="display:block;margin-top:6px"></label>
-          <label class="small">Back image<input id="idBack" type="file" accept="image/*" style="display:block;margin-top:6px"></label>
-          <div class="toolbar" style="padding:0"><button class="btn primary" onclick="scanIdCard()">Scan ID</button><button class="btn" onclick="confirmIdScan()">Confirm & create client</button></div>
-          <div class="note"><strong>Review required:</strong> OCR/QR extraction fills the record but does not prove the document is authentic.</div>
-          <div id="idScanResult" class="muted">Choose clear photos of both sides.</div>
-        </div>
+        <div class="section"><h2>Document intake</h2><span class="muted small">Standalone product boundary</span></div>
+        <p class="muted">Scan and review identity documents in <strong>Codestra Document Console</strong>. After operator confirmation, Middleware V3 sends FACE-ID a reviewed document handoff. FACE-ID does not run OCR, decode document QR codes, or store raw ID images.</p>
+        <div class="note"><strong>Flow:</strong> Document Console → Middleware V3 → Document Intelligence → reviewed handoff → FACE-ID client record.</div>
+        <div class="small muted" style="margin-top:10px">Document authenticity is not inferred from OCR. FACE-ID only accepts a confirmed handoff reference.</div>
       </div>
       <div class="card">
         <div class="section"><h2>Client database</h2><button class="btn" onclick="loadClients()">Refresh</button></div>
@@ -119,11 +115,10 @@ main{padding:26px;min-width:0}.top{display:flex;justify-content:space-between;ga
         <label><input id="clientFaceConsent" type="checkbox"> I confirm explicit biometric face-enrollment consent.</label>
         <input id="clientConsentRef" placeholder="Consent reference" style="padding:10px;border:1px solid var(--line);border-radius:10px">
         <button class="btn primary" onclick="enrollClientFace()">Enroll face</button>
-        <div class="small muted">Uses a separate consented face capture, not the portrait printed on the ID card.</div>
+        <div class="small muted">Uses a separate consented face capture. The ID-card portrait is not automatically enrolled as a biometric template.</div>
       </div>
     </div>
   </section>
-
   <section class="tab" id="audit">
     <div class="card">
       <div class="section"><h2>Administrative audit trail</h2><button class="btn" onclick="loadAudit()">Refresh</button></div>
@@ -146,7 +141,7 @@ main{padding:26px;min-width:0}.top{display:flex;justify-content:space-between;ga
 </div>
 
 <script>
-const q=s=>document.querySelector(s);let cameraId='ezviz-main',capturedBase64=null,allEvents=[],unknownOnly=false,names={},cameraMap={},lastPendingUnknown=null,lastIdScan=null;
+const q=s=>document.querySelector(s);let cameraId='ezviz-main',capturedBase64=null,allEvents=[],unknownOnly=false,names={},cameraMap={},lastPendingUnknown=null;
 function toast(msg){alert(msg)}
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function initials(v){return String(v||'?').split(/\s+/).slice(0,2).map(x=>x[0]||'').join('').toUpperCase()}
@@ -215,8 +210,6 @@ async function loadRegistrationInfo(){
     q('#registrationUrl').textContent='Registration link unavailable';
   }
 }
-async function scanIdCard(){const f=q('#idFront').files[0],b=q('#idBack').files[0];if(!f)return toast('Choose the front image');q('#idScanResult').textContent='Scanning…';try{lastIdScan=await j('/v1/id-documents/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({front_image_base64:await b64(f),back_image_base64:b?await b64(b):null})});const x=lastIdScan.fields||{},keys=['full_name','document_number','address','height','weight_lb','sex','blood_type','birth_date','issue_date','expiry_date','category','restriction','first_issue_date','card_serial'];q('#idScanResult').innerHTML='<div style="display:grid;gap:6px">'+keys.map(k=>'<label class="small">'+esc(k.replaceAll('_',' '))+'<input class="idscan-field" data-key="'+esc(k)+'" value="'+esc(x[k]||'')+'" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;margin-top:3px"></label>').join('')+'<div class="small muted">'+esc((lastIdScan.warnings||[]).join(', ')||'No extraction warnings')+'</div></div>'}catch(e){q('#idScanResult').textContent='Scan failed: '+e.message}}
-async function confirmIdScan(){if(!lastIdScan)return toast('Scan the ID first');const f={...(lastIdScan.fields||{})};document.querySelectorAll('.idscan-field').forEach(x=>f[x.dataset.key]=x.value.trim());if(!f.full_name)return toast('Confirm the full name');if(!/^\d{11}$/.test(String(f.document_number||'').replace(/\D/g,'')))return toast('Confirm the 11-digit document number');try{await j('/v1/id-documents/'+encodeURIComponent(lastIdScan.scan_id)+'/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fields:f,operator_confirmed:true,operator_ref:'dashboard-admin',note:'Reviewed in dashboard'})});const c=await j('/v1/clients/from-id-scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scan_id:lastIdScan.scan_id,operator_ref:'dashboard-admin'})});q('#clientEnrollId').value=c.client_id;toast('Client created: '+c.display_name);loadClients()}catch(e){toast('Could not create client: '+e.message)}}
 async function enrollClientFace(){const id=q('#clientEnrollId').value.trim(),f=q('#clientFaceFile').files[0],ref=q('#clientConsentRef').value.trim();if(!id||!f)return toast('Select a client and face image');if(!q('#clientFaceConsent').checked)return toast('Explicit consent is required');if(!ref)return toast('Enter a consent reference');try{const o=await j('/v1/clients/'+encodeURIComponent(id)+'/face-enrollment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_base64:await b64(f),consent_obtained:true,consent_reference:ref,retention_days:365})});toast('Face enrolled for '+o.display_name);loadClients();loadPeople();refreshAll()}catch(e){toast('Face enrollment failed: '+e.message)}}
 async function loadClients(){try{const rows=await j('/v1/clients?limit=300');q('#clientList').textContent=rows.length?rows.map(c=>c.display_name+' • '+c.client_id+' •••• '+(c.document_last4||'')+(c.face_enrolled?' • face enrolled':'')).join('\n'):'No clients yet.'}catch(e){q('#clientList').textContent='Could not load clients'}}
 async function loadAudit(){

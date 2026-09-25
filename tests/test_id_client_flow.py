@@ -1,113 +1,81 @@
-import base64
-
 from app import main
-from app.id_document import parse_dr_driver_license
 
 
-def test_parser_extracts_expected_fields():
-    front = """REPUBLICA DOMINICANA
-LICENCIA DE CONDUCIR
-QA CLIENTE
-EJEMPLO DOS
-Dirección
-CALLE DEMO 10
-Estatura 5-10 Peso 170 Sexo M
-Tipo de Sangre O+
-Nacimiento 01/01/2000
-Emisión 02/02/2023
-Vence 01/01/2030
-99999999999"""
-    back = """Categoría
-02 CONDUCTOR
-Restricciones
-TRANSMISION AUTOMATICA
-Primera Emisión
-2/2/2023
-7654321"""
-    out = parse_dr_driver_license(front, back)
-    assert out["document_number"] == "99999999999"
-    assert out["birth_date"] == "01/01/2000"
-    assert out["expiry_date"] == "01/01/2030"
-    assert out["category"].startswith("02")
-    assert out["restriction"].startswith("TRANSMISION")
-
-
-def test_scan_requires_operator_confirmation_and_does_not_persist_full_number(client, monkeypatch):
-    monkeypatch.setattr(
-        main,
-        "scan_license",
-        lambda front, back=None: {
-            "fields": {
-                "country": "DO",
-                "document_type": "driver_license",
-                "full_name": "QA Client",
-                "document_number": "99999999999",
-                "address": "QA Address",
-            },
-            "document_hash": "a" * 64,
-            "document_last4": "9999",
-            "authority_lookup_url": None,
-            "authority_lookup_hash": None,
-            "warnings": [],
-            "ocr_front": "QA",
-            "ocr_back": "",
+def handoff(**overrides):
+    body = {
+        "schema_ref": "codestra.document.face-id-handoff/v1",
+        "scan_id": "dscan_test12345",
+        "tenant_id": "tenant-a",
+        "ready": True,
+        "status": "confirmed",
+        "document": {
+            "document_type": "driver_license",
+            "country": "DO",
+            "number_last4": "9999",
+            "document_hash": "hmac-sha256:" + "a" * 64,
         },
-    )
-    response = client.post(
-        "/v1/id-documents/scan",
-        json={"front_image_base64": base64.b64encode(b"placeholder").decode()},
-    )
-    assert response.status_code == 200
-    scan = response.json()
-    scan_id = scan["scan_id"]
-    stored = main.conn().execute(
-        "select fields,document_last4,status from id_scan_sessions where scan_id=%s",
-        (scan_id,),
-    ).fetchone()
-    assert "document_number" not in stored[0]
-    assert stored[1] == "9999"
-    assert stored[2] == "scanned"
-
-    create = client.post(
-        "/v1/clients/from-id-scan",
-        json={"scan_id": scan_id, "operator_ref": "qa"},
-    )
-    assert create.status_code == 409
-
-    fields = dict(scan["fields"])
-    fields["document_number"] = "99999999999"
-    confirm = client.post(
-        f"/v1/id-documents/{scan_id}/confirm",
-        json={
-            "fields": fields,
-            "operator_confirmed": True,
-            "operator_ref": "qa",
-            "note": "reviewed",
+        "subject": {
+            "given_names": "QA",
+            "surnames": "CLIENT",
+            "full_name": "QA CLIENT",
+            "date_of_birth": "2000-01-01",
+            "sex": "M",
         },
-    )
-    assert confirm.status_code == 200
-    stored = main.conn().execute(
-        "select fields,document_hash,document_last4,status from id_scan_sessions where scan_id=%s",
-        (scan_id,),
-    ).fetchone()
-    assert "document_number" not in stored[0]
-    assert len(stored[1]) == 64
-    assert stored[2] == "9999"
-    assert stored[3] == "confirmed"
+        "portrait_detected": True,
+        "portrait_side": "front",
+        "front_image_sha256": "b" * 64,
+        "back_image_sha256": None,
+        "operator_ref": "qa",
+    }
+    body.update(overrides)
+    return body
 
-    create = client.post(
-        "/v1/clients/from-id-scan",
-        json={"scan_id": scan_id, "operator_ref": "qa"},
-    )
-    assert create.status_code == 200
-    client_id = create.json()["client_id"]
+
+def test_confirmed_document_handoff_creates_client_without_ocr(client):
+    response = client.post("/v1/clients/from-document-handoff", json=handoff())
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    client_id = payload["client_id"]
+    assert payload["display_name"] == "QA CLIENT"
+    assert payload["document_last4"] == "9999"
+    assert payload["source"] == "document-intelligence"
+
     got = client.get(f"/v1/clients/{client_id}")
     assert got.status_code == 200
-    payload = got.json()
-    assert payload["display_name"] == "QA Client"
-    assert payload["document_last4"] == "9999"
-    assert "document_number" not in payload["attributes"]
-    assert payload["face_enrolled"] is False
+    record = got.json()
+    assert record["document_type"] == "driver_license"
+    assert record["document_last4"] == "9999"
+    assert record["source"] == "document-intelligence"
+    assert record["attributes"]["document_scan_ref"] == "dscan_test12345"
+    assert record["attributes"]["document_tenant_ref"] == "tenant-a"
+    assert "document_number" not in record["attributes"]
+    assert record["face_enrolled"] is False
+
+
+def test_handoff_must_be_confirmed_and_ready(client):
+    body = handoff(status="pending_review", ready=False)
+    response = client.post("/v1/clients/from-document-handoff", json=body)
+    assert response.status_code == 409
+
+
+def test_handoff_schema_is_pinned(client):
+    body = handoff(schema_ref="codestra.document.face-id-handoff/v2")
+    response = client.post("/v1/clients/from-document-handoff", json=body)
+    assert response.status_code == 422
+
+
+def test_duplicate_document_hash_cannot_create_second_client(client):
+    doc = {
+        "document_type": "driver_license",
+        "country": "DO",
+        "number_last4": "1111",
+        "document_hash": "hmac-sha256:" + "c" * 64,
+    }
+    first = handoff(client_id="client-one", scan_id="dscan_dup11111", document=doc)
+    second = handoff(client_id="client-two", scan_id="dscan_dup22222", document=doc)
+    assert client.post("/v1/clients/from-document-handoff", json=first).status_code == 200
+    response = client.post("/v1/clients/from-document-handoff", json=second)
+    assert response.status_code == 409
 
 
 def test_face_enrollment_requires_explicit_consent(client):
@@ -122,6 +90,13 @@ def test_face_enrollment_requires_explicit_consent(client):
     assert response.status_code == 400
 
 
-def test_id_scan_and_clients_are_local_admin_only(lan):
+def test_document_handoff_and_clients_are_local_admin_only(lan):
     assert lan.get("/v1/clients").status_code == 403
-    assert lan.get("/v1/id-documents/not-found").status_code == 403
+    assert (
+        lan.post("/v1/clients/from-document-handoff", json=handoff()).status_code
+        == 403
+    )
+
+
+def test_face_id_no_longer_imports_ocr_runtime():
+    assert not hasattr(main, "scan_license")
