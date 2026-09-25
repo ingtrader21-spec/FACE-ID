@@ -1,6 +1,7 @@
 import base64, json, os, re, time, threading, uuid, hashlib, hmac, io, datetime, zoneinfo
 from typing import Optional
 import cv2, httpx, psycopg
+import numpy as np
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -191,6 +192,62 @@ class ReviewItemPatch(BaseModel):
     assignee_ref: Optional[str]=None
     notes: Optional[str]=Field(default=None,max_length=2000)
 
+class WatchlistIn(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    watchlist_id: str
+    name: str=Field(min_length=1,max_length=120)
+    category: str
+    description: Optional[str]=Field(default=None,max_length=1000)
+    status: str="active"
+
+class WatchlistPatch(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    name: Optional[str]=Field(default=None,min_length=1,max_length=120)
+    category: Optional[str]=None
+    description: Optional[str]=Field(default=None,max_length=1000)
+    status: Optional[str]=None
+
+class WatchlistMemberIn(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    subject_ref: Optional[str]=None
+    subject_id: Optional[str]=None
+    visitor_pass_id: Optional[str]=None
+    note: Optional[str]=Field(default=None,max_length=1000)
+    added_by_ref: Optional[str]=None
+    expires_at: Optional[str]=None
+
+class EnrollmentSessionIn(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    subject_id: str
+    display_name: str=Field(min_length=1,max_length=200)
+    consent_obtained: bool
+    consent_reference: str=Field(min_length=1,max_length=200)
+    retention_days: int=Field(default=365,ge=1,le=3650)
+    operator_ref: Optional[str]=None
+
+class EnrollmentImageIn(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    image_base64: str=Field(min_length=1)
+    consent_obtained: bool
+
+class DuplicateResolveIn(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    resolution: str
+    note: Optional[str]=Field(default=None,max_length=2000)
+    resolver_ref: Optional[str]=None
+
+class ReembeddingJobsIn(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    subject_ids: list[str]=Field(min_length=1,max_length=500)
+    reason: str=Field(min_length=1,max_length=500)
+    requested_by_ref: Optional[str]=None
+
+class ReembeddingCompleteIn(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    images_base64: list[str]=Field(min_length=1,max_length=10)
+    consent_obtained: bool
+    consent_reference: Optional[str]=Field(default=None,max_length=200)
+
 def conn(): return psycopg.connect(DB)
 def init_db():
     with conn() as c:
@@ -359,6 +416,113 @@ def init_db():
           updated_at timestamptz not null default now(),
           resolved_at timestamptz,
           unique(queue_id,item_type,item_ref))""")
+        c.execute("""create table if not exists watchlists(
+          watchlist_id text primary key,
+          name text not null,
+          category text not null,
+          description text,
+          status text not null default 'active',
+          created_at timestamptz not null default now(),
+          updated_at timestamptz not null default now())""")
+        c.execute("""create table if not exists watchlist_members(
+          member_id text primary key,
+          watchlist_id text not null,
+          subject_kind text not null,
+          subject_ref text not null,
+          note text,
+          added_by_ref text,
+          expires_at timestamptz,
+          created_at timestamptz not null default now(),
+          unique(watchlist_id,subject_kind,subject_ref))""")
+        c.execute("create index if not exists watchlist_members_subject_idx on watchlist_members(subject_kind,subject_ref)")
+        c.execute("""create table if not exists recognition_models(
+          model_key text primary key,
+          provider text not null,
+          detector text,
+          recognizer text not null,
+          metric text,
+          model_id text not null,
+          model_version text not null,
+          model_digest text not null,
+          digest_kind text not null,
+          embedding_version text not null,
+          dimension int,
+          first_seen_at timestamptz not null default now(),
+          last_seen_at timestamptz not null default now())""")
+        for col in ("model_key text","model_id text","model_version text","model_digest text","embedding_version text",
+                    "embedding_dim int","embedding_method text","embedding_image_count int","embedded_at timestamptz"):
+            c.execute("alter table subjects add column if not exists "+col)
+        c.execute("alter table registration_requests add column if not exists model_key text")
+        c.execute("""create table if not exists subject_embedding_history(
+          history_id text primary key,
+          subject_id text not null,
+          embedding jsonb not null,
+          model_key text,
+          embedding_version text,
+          embedding_method text,
+          reason text not null,
+          archived_at timestamptz not null default now())""")
+        c.execute("create index if not exists subject_embedding_history_subject_idx on subject_embedding_history(subject_id)")
+        c.execute("""create table if not exists enrollment_sessions(
+          session_id text primary key,
+          subject_id text not null,
+          display_name text not null,
+          consent_reference text not null,
+          retention_days int not null,
+          operator_ref text,
+          status text not null default 'open',
+          subject_existed boolean not null default false,
+          created_at timestamptz not null default now(),
+          updated_at timestamptz not null default now(),
+          expires_at timestamptz not null,
+          finalized_at timestamptz)""")
+        c.execute("create unique index if not exists enrollment_sessions_open_idx on enrollment_sessions(subject_id) where status='open'")
+        c.execute("""create table if not exists enrollment_session_images(
+          image_id text primary key,
+          session_id text not null,
+          seq int not null,
+          status text not null,
+          reasons jsonb not null default '[]'::jsonb,
+          quality jsonb not null default '{}'::jsonb,
+          image_sha256 text not null,
+          embedding jsonb,
+          model_key text,
+          created_at timestamptz not null default now(),
+          unique(session_id,seq))""")
+        c.execute("""create table if not exists duplicate_candidates(
+          candidate_id text primary key,
+          session_id text not null,
+          subject_ref text not null,
+          candidate_subject_ref text not null,
+          score double precision not null,
+          threshold double precision not null,
+          embedding_version text,
+          version_unverified boolean not null default false,
+          status text not null default 'open',
+          resolution text,
+          note text,
+          resolver_ref text,
+          created_at timestamptz not null default now(),
+          updated_at timestamptz not null default now(),
+          resolved_at timestamptz,
+          unique(session_id,candidate_subject_ref))""")
+        c.execute("""create table if not exists reembedding_jobs(
+          job_id text primary key,
+          subject_id text not null,
+          status text not null default 'queued',
+          reason text not null,
+          requested_by_ref text,
+          source_embedding_version text,
+          target_embedding_version text not null,
+          target_model_key text not null,
+          history_id text,
+          error text,
+          consent_reference text,
+          created_at timestamptz not null default now(),
+          updated_at timestamptz not null default now(),
+          completed_at timestamptz)""")
+        c.execute("create unique index if not exists reembedding_jobs_queued_idx on reembedding_jobs(subject_id) where status='queued'")
+        c.execute("create index if not exists audit_log_occurred_idx on audit_log(occurred_at,audit_id)")
 
 WORKER_INTERVAL=float(os.getenv("FACEID_WORKER_INTERVAL_SECONDS","2"))
 EVENT_COOLDOWN=float(os.getenv("FACEID_EVENT_COOLDOWN_SECONDS","15"))
@@ -393,8 +557,13 @@ def _cleanup_expired():
         c.execute("delete from unknown_cluster_events u where not exists (select 1 from events e where e.event_id=u.event_id)")
         expired_subjects=[r[0] for r in c.execute("""select subject_id from subjects
                                                      where created_at + (retention_days * interval '1 day') < now()""").fetchall()]
+        for subject_id in expired_subjects:
+            _purge_subject_dependents(c,subject_id)
         if expired_subjects:
             c.execute("delete from subjects where subject_id = any(%s)",(expired_subjects,))
+        c.execute("delete from subject_embedding_history where archived_at < now() - (%s * interval '1 day')",(EMBEDDING_HISTORY_DAYS,))
+        for (session_id,) in c.execute("select session_id from enrollment_sessions where status='open' and expires_at<=now()").fetchall():
+            _close_session(c,session_id,"expired")
     for path in paths:
         try:
             if path and os.path.exists(path):
@@ -543,18 +712,20 @@ def public_enroll(req:PublicEnroll):
     if not er.is_success:
         raise HTTPException(er.status_code,er.text)
     emb=er.json()["embedding"]
+    meta=_try_model_meta()
     request_id="reg-"+uuid.uuid4().hex[:16]
     consent_ref=f"qr-do-self-registration:{req.consent_text_version}"
     with conn() as c:
+        if meta: _register_model(c,meta,len(emb))
         existing=c.execute("select request_id,status from registration_requests where id_hash=%s order by created_at desc limit 1",(id_hash,)).fetchone()
         if existing and existing[1]=="pending":
             request_id=existing[0]
-            c.execute("""update registration_requests set display_name=%s,id_last4=%s,embedding=%s::jsonb,consent_reference=%s,created_at=now()
-                         where request_id=%s""",(name,req.id_last4,json.dumps(emb),consent_ref,request_id))
+            c.execute("""update registration_requests set display_name=%s,id_last4=%s,embedding=%s::jsonb,consent_reference=%s,created_at=now(),
+                         model_key=%s where request_id=%s""",(name,req.id_last4,json.dumps(emb),consent_ref,meta and meta["model_key"],request_id))
         else:
-            c.execute("""insert into registration_requests(request_id,display_name,id_hash,id_last4,embedding,consent_reference)
-                         values(%s,%s,%s,%s,%s::jsonb,%s)""",
-                      (request_id,name,id_hash,req.id_last4,json.dumps(emb),consent_ref))
+            c.execute("""insert into registration_requests(request_id,display_name,id_hash,id_last4,embedding,consent_reference,model_key)
+                         values(%s,%s,%s,%s,%s::jsonb,%s,%s)""",
+                      (request_id,name,id_hash,req.id_last4,json.dumps(emb),consent_ref,meta and meta["model_key"]))
     _audit("registration.submitted","registration_request",request_id,{"display_name":name,"id_country":"DO","id_type":"cedula","id_last4":req.id_last4},actor="self-registration")
     return {"submitted":True,"request_id":request_id,"status":"pending_review","display_name":name}
 
@@ -663,6 +834,11 @@ def capabilities(): return {"camera_ingest":["rtsp","onvif"],"recognition":["enr
     "unknown_clusters":{"endpoint":"/v1/unknown-clusters","identity_assertion":False,"attachable_event_types":["unknown_face"]},
     "camera_zone_mapping":{"endpoint":"/v1/camera-zones","priority":"lower value preferred","stores_camera_credentials":False},
     "review_queues":{"endpoint":"/v1/review-queues","item_types":sorted(_REVIEW_ITEM_TYPES),"priorities":list(_REVIEW_PRIORITIES),"assignee_ref":"opaque","identity_authority":"keycloak","trusts_role_headers":False},
+    "watchlists":{"endpoint":"/v1/watchlists","categories":list(_WATCHLIST_CATEGORIES),"member_kinds":["subject","visitor_pass"],"identity_proof":False,"automatic_actions":False,"used_by_access_decisions":False},
+    "enrollment_sessions":{"endpoint":"/v1/enrollment-sessions","multi_image":True,"quality_thresholds":_quality_thresholds(),"aggregation_method":_AGGREGATION_METHOD,"images_persisted":False,"liveness":False},
+    "duplicate_candidates":{"endpoint":"/v1/duplicate-candidates","threshold":DUPLICATE_THRESHOLD,"recognition_threshold":MATCH_THRESHOLD,"max_candidates":DUPLICATE_MAX_CANDIDATES,"auto_merge":False,"identity_assertion":False},
+    "model_registry":{"endpoints":["/v1/models","/v1/models/current","/v1/models/migration-status","/v1/reembedding-jobs"],"registry_read_only":True,"automatic_migration":False,"digest_kind":"descriptor-sha256","embedding_history_retention_days":EMBEDDING_HISTORY_DAYS},
+    "audit_export":{"endpoint":"/v1/audit/export","retention_endpoint":"/v1/audit/retention","max_range_days":AUDIT_EXPORT_MAX_DAYS,"max_page_size":1000,"redaction_policy":_REDACTION_POLICY,"integrity":"sha256 record digests + hash chain","signed":bool(AUDIT_EXPORT_HMAC_KEY)},
     "middleware_authority":"Caddy -> Kong -> Middleware V3 :8095 -> service API"}
 @app.post("/v1/faces/enroll")
 def enroll(req:Enroll):
@@ -670,13 +846,19 @@ def enroll(req:Enroll):
     er=httpx.post(ENGINE+"/v1/embeddings",json={"image_base64":req.image_base64},timeout=20)
     if not er.is_success: raise HTTPException(er.status_code,er.text)
     emb=er.json()["embedding"]
+    meta=_try_model_meta()
     with conn() as c:
+        if meta: _register_model(c,meta,len(emb))
+        _archive_embedding(c,req.subject_id,"manual_enroll")
         c.execute("""insert into subjects(subject_id,display_name,embedding,consent_obtained,consent_reference,retention_days) values(%s,%s,%s::jsonb,%s,%s,%s) on conflict(subject_id) do update set display_name=excluded.display_name,embedding=excluded.embedding,consent_obtained=excluded.consent_obtained,consent_reference=excluded.consent_reference,retention_days=excluded.retention_days,updated_at=now()""",(req.subject_id,req.display_name,json.dumps(emb),req.consent_obtained,req.consent_reference,req.retention_days))
+        _stamp_subject(c,req.subject_id,meta,len(emb),"single-image",1)
     _audit("subject.enrolled","subject",req.subject_id,{"display_name":req.display_name,"source":"manual"})
     return {"subject_id":req.subject_id,"display_name":req.display_name,"enrolled":True}
 @app.delete("/v1/faces/{subject_id}")
 def delete_face(subject_id:str):
-    with conn() as c: c.execute("delete from subjects where subject_id=%s",(subject_id,))
+    with conn() as c:
+        _purge_subject_dependents(c,subject_id)
+        c.execute("delete from subjects where subject_id=%s",(subject_id,))
     _audit("subject.deleted","subject",subject_id)
     return {"deleted":True,"subject_id":subject_id}
 @app.post("/v1/faces/detect")
@@ -700,9 +882,10 @@ def verify(req:SearchReq):
 @app.get("/v1/subjects")
 def subjects():
     with conn() as c:
-        rows=c.execute("select subject_id,display_name,consent_obtained,consent_reference,retention_days,created_at,updated_at,id_country,id_type,id_last4,enrollment_source from subjects order by display_name").fetchall()
+        rows=c.execute("select subject_id,display_name,consent_obtained,consent_reference,retention_days,created_at,updated_at,id_country,id_type,id_last4,enrollment_source,model_key,embedding_version,embedding_method,embedded_at from subjects order by display_name").fetchall()
     return [{"subject_id":r[0],"display_name":r[1],"consent_obtained":r[2],"consent_reference":r[3],"retention_days":r[4],
-             "created_at":r[5],"updated_at":r[6],"id_country":r[7],"id_type":r[8],"id_last4":r[9],"enrollment_source":r[10]} for r in rows]
+             "created_at":r[5],"updated_at":r[6],"id_country":r[7],"id_type":r[8],"id_last4":r[9],"enrollment_source":r[10],
+             "model_key":r[11],"embedding_version":r[12],"embedding_method":r[13],"embedded_at":r[14]} for r in rows]
 
 @app.get("/v1/registrations")
 def registration_requests(status:str="pending", limit:int=200):
@@ -721,15 +904,16 @@ def registration_decision(request_id:str, req:RegistrationDecision):
     if action not in {"approve","reject"}:
         raise HTTPException(400,"action must be approve or reject")
     with conn() as c:
-        row=c.execute("""select display_name,id_hash,id_last4,embedding,consent_reference,status
+        row=c.execute("""select display_name,id_hash,id_last4,embedding,consent_reference,status,model_key
                          from registration_requests where request_id=%s""",(request_id,)).fetchone()
         if not row:
             raise HTTPException(404,"registration request not found")
         if row[5]!="pending":
             raise HTTPException(409,"registration request already decided")
-        name,id_hash,id_last4,embedding,consent_ref,_=row
+        name,id_hash,id_last4,embedding,consent_ref,_,model_key=row
         if action=="approve":
             subject_id="do-"+id_hash[:16]
+            _archive_embedding(c,subject_id,"registration_approved:"+request_id)
             c.execute("""insert into subjects(subject_id,display_name,embedding,consent_obtained,consent_reference,retention_days,
                          id_country,id_type,id_hash,id_last4,enrollment_source)
                          values(%s,%s,%s::jsonb,true,%s,365,'DO','cedula',%s,%s,'qr-self-registration')
@@ -738,6 +922,7 @@ def registration_decision(request_id:str, req:RegistrationDecision):
                          id_country='DO',id_type='cedula',id_hash=excluded.id_hash,id_last4=excluded.id_last4,
                          enrollment_source='qr-self-registration'""",
                       (subject_id,name,json.dumps(embedding),consent_ref,id_hash,id_last4))
+            _stamp_subject(c,subject_id,_model_from_registry(c,model_key),len(embedding),"single-image",1)
             c.execute("update registration_requests set status='approved',decision_note=%s,decided_at=now() where request_id=%s",(req.note,request_id))
             _audit("registration.approved","registration_request",request_id,{"subject_id":subject_id,"display_name":name})
             return {"request_id":request_id,"status":"approved","subject_id":subject_id,"display_name":name}
@@ -932,12 +1117,14 @@ def privacy_export(subject_id:str):
                          (subject_id,subject_id)).fetchall()
         presence=c.execute("""select session_id,zone_id,camera_id,entered_at,exited_at from presence_sessions
                               where subject_kind='subject' and subject_ref=%s order by entered_at desc limit 1000""",(subject_id,)).fetchall()
+        extra=_privacy_export_extra(c,subject_id)
     _audit("privacy.exported","subject",subject_id)
     return {"subject":{"subject_id":s[0],"display_name":s[1],"consent_obtained":s[2],"consent_reference":s[3],
             "retention_days":s[4],"created_at":s[5],"updated_at":s[6],"id_country":s[7],"id_type":s[8],
             "id_last4":s[9],"enrollment_source":s[10],"labels":labels},
             "events":[{"event_id":e[0],"camera_id":e[1],"score":e[2],"event_type":e[3],"occurred_at":e[4],"review_status":e[5]} for e in events],
-            "presence_sessions":[{"session_id":p[0],"zone_id":p[1],"camera_id":p[2],"entered_at":p[3],"exited_at":p[4]} for p in presence]}
+            "presence_sessions":[{"session_id":p[0],"zone_id":p[1],"camera_id":p[2],"entered_at":p[3],"exited_at":p[4]} for p in presence],
+            **extra}
 
 @app.delete("/v1/privacy/subjects/{subject_id}")
 def privacy_delete(subject_id:str):
@@ -953,6 +1140,7 @@ def privacy_delete(subject_id:str):
         c.execute("delete from presence_observations where subject_kind='subject' and subject_ref=%s",(subject_id,))
         c.execute("delete from presence_sessions where subject_kind='subject' and subject_ref=%s",(subject_id,))
         c.execute("update visitor_passes set host_subject_id=null where host_subject_id=%s",(subject_id,))
+        _purge_subject_dependents(c,subject_id)
         c.execute("delete from subjects where subject_id=%s",(subject_id,))
     for path in snapshot_paths:
         try:
@@ -1620,3 +1808,785 @@ def patch_review_item(queue_id:str, item_id:str, req:ReviewItemPatch):
         row=c.execute(f"select {_ITEM_COLS} from review_queue_items where item_id=%s",(item_id,)).fetchone()
     _audit("review_item.updated","review_queue_item",item_id,{"queue_id":queue_id,"changes":changes})
     return _item_dict(row)
+
+# --- Missions 26-30: watchlists, enrollment quality, duplicate candidates, model registry, audit export ---
+
+_WATCHLIST_CATEGORIES=("staff","visitor","contractor","vip","review-required","denied-access")
+_WATCHLIST_STATUSES={"active","archived"}
+ENROLL_MIN_FACE_PX=int(os.getenv("FACEID_ENROLL_MIN_FACE_PX","80"))
+ENROLL_MIN_SHARPNESS=float(os.getenv("FACEID_ENROLL_MIN_SHARPNESS","40"))
+ENROLL_MIN_BRIGHTNESS=float(os.getenv("FACEID_ENROLL_MIN_BRIGHTNESS","40"))
+ENROLL_MAX_BRIGHTNESS=float(os.getenv("FACEID_ENROLL_MAX_BRIGHTNESS","220"))
+ENROLL_MAX_FACES=1
+ENROLL_MIN_IMAGES=int(os.getenv("FACEID_ENROLL_MIN_IMAGES","1"))
+ENROLL_MAX_IMAGES=int(os.getenv("FACEID_ENROLL_MAX_IMAGES","10"))
+ENROLL_MAX_IMAGE_BYTES=int(os.getenv("FACEID_ENROLL_MAX_IMAGE_BYTES",str(6*1024*1024)))
+ENROLL_SESSION_TTL_HOURS=int(os.getenv("FACEID_ENROLL_SESSION_TTL_HOURS","24"))
+DUPLICATE_THRESHOLD=float(os.getenv("FACEID_DUPLICATE_THRESHOLD","0.30"))
+DUPLICATE_MAX_CANDIDATES=int(os.getenv("FACEID_DUPLICATE_MAX_CANDIDATES","20"))
+EMBEDDING_HISTORY_DAYS=int(os.getenv("FACEID_EMBEDDING_HISTORY_DAYS","30"))
+AUDIT_EXPORT_MAX_DAYS=int(os.getenv("FACEID_AUDIT_EXPORT_MAX_DAYS","366"))
+AUDIT_EXPORT_HMAC_KEY=os.getenv("FACEID_AUDIT_EXPORT_HMAC_KEY","")
+AUDIT_EXPORT_KEY_ID=os.getenv("FACEID_AUDIT_EXPORT_KEY_ID","local")
+if DUPLICATE_THRESHOLD==MATCH_THRESHOLD:
+    raise RuntimeError("FACEID_DUPLICATE_THRESHOLD must differ from FACEID_MATCH_THRESHOLD")
+_AGGREGATION_METHOD="l2-mean-l2/v1"
+_DUPLICATE_RESOLUTIONS={"not_duplicate","duplicate_confirmed","dismissed"}
+_JOB_STATUSES={"queued","succeeded","failed","cancelled"}
+_REDACTION_POLICY="faceid-audit-redaction/v1"
+
+def _canonical(obj):
+    return json.dumps(obj,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()
+
+def _iso(ts):
+    return ts.astimezone(datetime.timezone.utc).isoformat() if ts else None
+
+def _purge_subject_dependents(c, subject_id):
+    """Remove Mission 26-29 rows tied to a subject: memberships, archived templates, sessions, candidates, jobs."""
+    c.execute("delete from watchlist_members where subject_kind='subject' and subject_ref=%s",(subject_id,))
+    c.execute("delete from subject_embedding_history where subject_id=%s",(subject_id,))
+    sessions=[r[0] for r in c.execute("select session_id from enrollment_sessions where subject_id=%s",(subject_id,)).fetchall()]
+    c.execute("delete from enrollment_session_images where session_id = any(%s)",(sessions,))
+    c.execute("delete from duplicate_candidates where session_id = any(%s) or candidate_subject_ref=%s",(sessions,subject_id))
+    c.execute("delete from enrollment_sessions where session_id = any(%s)",(sessions,))
+    c.execute("delete from reembedding_jobs where subject_id=%s",(subject_id,))
+
+def _privacy_export_extra(c, subject_id):
+    s=c.execute("""select model_key,model_id,model_version,model_digest,embedding_version,embedding_dim,embedding_method,
+                   embedding_image_count,embedded_at from subjects where subject_id=%s""",(subject_id,)).fetchone()
+    members=c.execute("""select m.watchlist_id,w.name,w.category,m.note,m.expires_at,m.created_at from watchlist_members m
+                         join watchlists w on w.watchlist_id=m.watchlist_id
+                         where m.subject_kind='subject' and m.subject_ref=%s order by m.created_at""",(subject_id,)).fetchall()
+    sessions=c.execute("""select s.session_id,s.status,s.created_at,s.finalized_at,count(i.image_id) filter (where i.status='accepted')
+                          from enrollment_sessions s left join enrollment_session_images i on i.session_id=s.session_id
+                          where s.subject_id=%s group by s.session_id order by s.created_at""",(subject_id,)).fetchall()
+    cands=c.execute("""select candidate_id,case when subject_ref=%s then 'enrolling' else 'matched' end,score,status,resolution,created_at
+                       from duplicate_candidates where subject_ref=%s or candidate_subject_ref=%s order by created_at""",
+                    (subject_id,subject_id,subject_id)).fetchall()
+    jobs=c.execute("select job_id,status,target_embedding_version,created_at,completed_at from reembedding_jobs where subject_id=%s order by created_at",(subject_id,)).fetchall()
+    archived=c.execute("select count(*) from subject_embedding_history where subject_id=%s",(subject_id,)).fetchone()[0]
+    return {"embedding_metadata":{"model_key":s[0],"model_id":s[1],"model_version":s[2],"model_digest":s[3],"embedding_version":s[4],
+                                  "embedding_dim":s[5],"embedding_method":s[6],"embedding_image_count":s[7],"embedded_at":s[8],
+                                  "archived_embeddings":archived,"template_included":False},
+            "watchlist_memberships":[{"watchlist_id":m[0],"name":m[1],"category":m[2],"note":m[3],"expires_at":m[4],"created_at":m[5]} for m in members],
+            "enrollment_sessions":[{"session_id":x[0],"status":x[1],"created_at":x[2],"finalized_at":x[3],"accepted_images":x[4]} for x in sessions],
+            "duplicate_candidates":[{"candidate_id":x[0],"role":x[1],"score":x[2],"status":x[3],"resolution":x[4],"created_at":x[5]} for x in cands],
+            "reembedding_jobs":[{"job_id":j[0],"status":j[1],"target_embedding_version":j[2],"created_at":j[3],"completed_at":j[4]} for j in jobs]}
+
+# Mission 26 - watchlists / subject categories. A watchlist is local policy metadata, NOT proof of identity:
+# membership never triggers an external action and is not consulted by access decisions.
+
+_WATCHLIST_COLS="watchlist_id,name,category,description,status,created_at,updated_at"
+_MEMBER_COLS="member_id,watchlist_id,subject_kind,subject_ref,note,added_by_ref,expires_at,created_at"
+
+def _watchlist_dict(r, member_count=None):
+    out={"watchlist_id":r[0],"name":r[1],"category":r[2],"description":r[3],"status":r[4],"created_at":r[5],"updated_at":r[6],
+         "identity_proof":False,"automatic_actions":False}
+    if member_count is not None: out["member_count"]=member_count
+    return out
+
+def _member_dict(r):
+    now=datetime.datetime.now(datetime.timezone.utc)
+    return {"member_id":r[0],"watchlist_id":r[1],"subject_kind":r[2],"subject_ref":r[3],"note":r[4],"added_by_ref":r[5],
+            "expires_at":r[6],"expired":bool(r[6] and r[6]<=now),"created_at":r[7],"identity_proof":False}
+
+def _watchlist_or_404(c, watchlist_id):
+    row=c.execute(f"select {_WATCHLIST_COLS} from watchlists where watchlist_id=%s",(watchlist_id,)).fetchone()
+    if not row: raise HTTPException(404,"watchlist not found")
+    return row
+
+def _check_category(v):
+    if v not in _WATCHLIST_CATEGORIES: raise HTTPException(400,"category must be one of "+", ".join(_WATCHLIST_CATEGORIES))
+
+def _check_watchlist_status(v):
+    if v not in _WATCHLIST_STATUSES: raise HTTPException(400,"status must be active or archived")
+
+@app.get("/v1/watchlists",tags=["watchlists"])
+def list_watchlists(category:Optional[str]=None, status:str="all"):
+    with conn() as c:
+        rows=c.execute(f"""select {",".join("w."+x for x in _WATCHLIST_COLS.split(","))},count(m.member_id)
+                           from watchlists w left join watchlist_members m on m.watchlist_id=w.watchlist_id
+                           where (%s::text is null or w.category=%s) and (%s='all' or w.status=%s)
+                           group by w.watchlist_id order by w.name""",(category,category,status,status)).fetchall()
+    return [_watchlist_dict(r,r[7]) for r in rows]
+
+@app.post("/v1/watchlists",tags=["watchlists"])
+def create_watchlist(req:WatchlistIn):
+    watchlist_id=_ref(req.watchlist_id,"watchlist_id",required=True)
+    _check_category(req.category); _check_watchlist_status(req.status)
+    with conn() as c:
+        row=c.execute(f"""insert into watchlists(watchlist_id,name,category,description,status) values(%s,%s,%s,%s,%s)
+                          on conflict(watchlist_id) do nothing returning {_WATCHLIST_COLS}""",
+                      (watchlist_id,req.name.strip(),req.category,req.description,req.status)).fetchone()
+    if not row: raise HTTPException(409,"watchlist_id already exists; use PATCH to update it")
+    _audit("watchlist.created","watchlist",watchlist_id,{"name":row[1],"category":row[2],"status":row[4]})
+    return _watchlist_dict(row,0)
+
+@app.get("/v1/watchlists/{watchlist_id}",tags=["watchlists"])
+def get_watchlist(watchlist_id:str):
+    with conn() as c:
+        row=_watchlist_or_404(c,watchlist_id)
+        count=c.execute("select count(*) from watchlist_members where watchlist_id=%s",(watchlist_id,)).fetchone()[0]
+    return _watchlist_dict(row,count)
+
+@app.patch("/v1/watchlists/{watchlist_id}",tags=["watchlists"])
+def patch_watchlist(watchlist_id:str, req:WatchlistPatch):
+    changes=req.model_dump(exclude_unset=True)
+    if "name" in changes:
+        if changes["name"] is None or not changes["name"].strip(): raise HTTPException(400,"name cannot be empty")
+        changes["name"]=changes["name"].strip()
+    if "category" in changes: _check_category(changes["category"])
+    if "status" in changes: _check_watchlist_status(changes["status"])
+    with conn() as c:
+        _watchlist_or_404(c,watchlist_id)
+        for k,v in changes.items():
+            c.execute(f"update watchlists set {k}=%s,updated_at=now() where watchlist_id=%s",(v,watchlist_id))
+        row=_watchlist_or_404(c,watchlist_id)
+    _audit("watchlist.updated","watchlist",watchlist_id,{"changes":changes})
+    return _watchlist_dict(row)
+
+@app.delete("/v1/watchlists/{watchlist_id}",tags=["watchlists"])
+def delete_watchlist(watchlist_id:str):
+    with conn() as c:
+        _watchlist_or_404(c,watchlist_id)
+        if c.execute("select 1 from watchlist_members where watchlist_id=%s limit 1",(watchlist_id,)).fetchone():
+            raise HTTPException(409,"watchlist has members; remove them or archive it with PATCH status=archived")
+        c.execute("delete from watchlists where watchlist_id=%s",(watchlist_id,))
+    _audit("watchlist.deleted","watchlist",watchlist_id)
+    return {"watchlist_id":watchlist_id,"deleted":True}
+
+@app.get("/v1/watchlists/{watchlist_id}/members",tags=["watchlists"])
+def list_watchlist_members(watchlist_id:str, include_expired:bool=True):
+    with conn() as c:
+        _watchlist_or_404(c,watchlist_id)
+        rows=c.execute(f"""select {_MEMBER_COLS} from watchlist_members where watchlist_id=%s
+                           and (%s or expires_at is null or expires_at>now()) order by created_at""",(watchlist_id,include_expired)).fetchall()
+    return [_member_dict(r) for r in rows]
+
+@app.post("/v1/watchlists/{watchlist_id}/members",tags=["watchlists"])
+def add_watchlist_member(watchlist_id:str, req:WatchlistMemberIn):
+    subject=_subject_ref(req.subject_ref,req.subject_id)
+    pass_id=_ref(req.visitor_pass_id,"visitor_pass_id")
+    if bool(subject)==bool(pass_id): raise HTTPException(400,"provide exactly one of subject_ref/subject_id or visitor_pass_id")
+    kind,ref=("subject",subject) if subject else ("visitor_pass",pass_id)
+    added_by=_ref(req.added_by_ref,"added_by_ref")
+    expires_at=_parse_ts(req.expires_at,"expires_at") if req.expires_at else None
+    with conn() as c:
+        wl=_watchlist_or_404(c,watchlist_id)
+        if wl[4]=="archived": raise HTTPException(409,"watchlist is archived")
+        table,column=("subjects","subject_id") if kind=="subject" else ("visitor_passes","pass_id")
+        if not _exists(c,table,column,ref): raise HTTPException(400,f"{kind} reference does not exist")
+        row=c.execute(f"""insert into watchlist_members(member_id,watchlist_id,subject_kind,subject_ref,note,added_by_ref,expires_at)
+                          values(%s,%s,%s,%s,%s,%s,%s) on conflict(watchlist_id,subject_kind,subject_ref) do nothing returning {_MEMBER_COLS}""",
+                      ("wlm-"+uuid.uuid4().hex[:16],watchlist_id,kind,ref,req.note,added_by,expires_at)).fetchone()
+        created=row is not None
+        if not created:
+            row=c.execute(f"select {_MEMBER_COLS} from watchlist_members where watchlist_id=%s and subject_kind=%s and subject_ref=%s",
+                          (watchlist_id,kind,ref)).fetchone()
+        else:
+            c.execute("update watchlists set updated_at=now() where watchlist_id=%s",(watchlist_id,))
+    if created: _audit("watchlist.member_added","watchlist",watchlist_id,{"member_id":row[0],"subject_kind":kind,"subject_ref":ref,
+                       "category":wl[2],"added_by_ref":added_by,"expires_at":_iso(expires_at)})
+    return {**_member_dict(row),"created":created}
+
+@app.delete("/v1/watchlists/{watchlist_id}/members/{member_id}",tags=["watchlists"])
+def remove_watchlist_member(watchlist_id:str, member_id:str):
+    with conn() as c:
+        _watchlist_or_404(c,watchlist_id)
+        row=c.execute("delete from watchlist_members where watchlist_id=%s and member_id=%s returning subject_kind,subject_ref",(watchlist_id,member_id)).fetchone()
+        if not row: raise HTTPException(404,"watchlist member not found")
+        c.execute("update watchlists set updated_at=now() where watchlist_id=%s",(watchlist_id,))
+    _audit("watchlist.member_removed","watchlist",watchlist_id,{"member_id":member_id,"subject_kind":row[0],"subject_ref":row[1]})
+    return {"watchlist_id":watchlist_id,"member_id":member_id,"removed":True}
+
+@app.get("/v1/subjects/{subject_id}/watchlists",tags=["watchlists"])
+def subject_watchlists(subject_id:str):
+    with conn() as c:
+        if not _exists(c,"subjects","subject_id",subject_id): raise HTTPException(404,"subject not found")
+        rows=c.execute(f"""select {",".join("m."+x for x in _MEMBER_COLS.split(","))},w.name,w.category,w.status
+                           from watchlist_members m join watchlists w on w.watchlist_id=m.watchlist_id
+                           where m.subject_kind='subject' and m.subject_ref=%s order by w.name""",(subject_id,)).fetchall()
+    return [{**_member_dict(r),"watchlist_name":r[8],"category":r[9],"watchlist_status":r[10]} for r in rows]
+
+# Mission 29 helpers - model / embedding version registry. The engine exposes no model-file hashes, so model_digest
+# is SHA-256 over the canonical engine descriptor (digest_kind=descriptor-sha256).
+
+_MODEL_COLS="model_key,provider,detector,recognizer,metric,model_id,model_version,model_digest,digest_kind,embedding_version,dimension,first_seen_at,last_seen_at"
+
+def _engine_status():
+    try:
+        r=httpx.get(ENGINE+"/v1/model/status",timeout=5)
+    except Exception:
+        raise HTTPException(503,"recognition engine model status unavailable")
+    if not r.is_success: raise HTTPException(503,"recognition engine model status unavailable")
+    return r.json()
+
+def _model_meta(status):
+    desc={k:str(status.get(k) or "") for k in ("provider","detector","recognizer","metric")}
+    if not desc["provider"] or not desc["recognizer"]: raise HTTPException(503,"recognition engine descriptor is incomplete")
+    digest=hashlib.sha256(_canonical(desc)).hexdigest()
+    return {**desc,"model_id":f"{desc['provider']}/{desc['recognizer']}","model_version":desc["recognizer"],
+            "model_digest":"sha256:"+digest,"digest_kind":"descriptor-sha256",
+            "model_key":f"{desc['provider']}:{desc['recognizer']}@{digest[:12]}",
+            "embedding_version":f"{desc['recognizer']}:{desc['metric'] or 'cosine'}:l2norm"}
+
+def _try_model_meta():
+    try: return _model_meta(_engine_status())
+    except HTTPException: return None
+
+def _register_model(c, meta, dimension):
+    c.execute("""insert into recognition_models(model_key,provider,detector,recognizer,metric,model_id,model_version,model_digest,digest_kind,
+                 embedding_version,dimension) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                 on conflict(model_key) do update set last_seen_at=now(),dimension=coalesce(excluded.dimension,recognition_models.dimension)""",
+              (meta["model_key"],meta["provider"],meta["detector"],meta["recognizer"],meta["metric"],meta["model_id"],meta["model_version"],
+               meta["model_digest"],meta["digest_kind"],meta["embedding_version"],dimension))
+
+def _model_dict(r):
+    return dict(zip(_MODEL_COLS.split(","),r))
+
+def _model_from_registry(c, model_key):
+    if not model_key: return None
+    row=c.execute(f"select {_MODEL_COLS} from recognition_models where model_key=%s",(model_key,)).fetchone()
+    return _model_dict(row) if row else None
+
+def _stamp_subject(c, subject_id, meta, dimension, method, image_count):
+    m=meta or {}
+    c.execute("""update subjects set model_key=%s,model_id=%s,model_version=%s,model_digest=%s,embedding_version=%s,embedding_dim=%s,
+                 embedding_method=%s,embedding_image_count=%s,embedded_at=now() where subject_id=%s""",
+              (m.get("model_key"),m.get("model_id"),m.get("model_version"),m.get("model_digest"),m.get("embedding_version"),
+               dimension,method,image_count,subject_id))
+
+def _archive_embedding(c, subject_id, reason):
+    """Copy the current template into subject_embedding_history in the same transaction that replaces it,
+    so the old embedding survives unless the replacement commits."""
+    row=c.execute("""insert into subject_embedding_history(history_id,subject_id,embedding,model_key,embedding_version,embedding_method,reason)
+                     select %s,subject_id,embedding,model_key,embedding_version,embedding_method,%s from subjects
+                     where subject_id=%s and jsonb_typeof(embedding)='array' and jsonb_array_length(embedding)>0 returning history_id""",
+                  ("eh-"+uuid.uuid4().hex[:20],reason,subject_id)).fetchone()
+    return row[0] if row else None
+
+# Mission 27 helpers - enrollment image quality. Quality checks are NOT liveness / presentation-attack detection.
+
+_haar=None
+
+def _engine_embed(image_b64):
+    """Return (embedding, bbox) for the engine's largest face, or (None, None) when no face is detected."""
+    try:
+        r=httpx.post(ENGINE+"/v1/embeddings",json={"image_base64":image_b64},timeout=25)
+    except Exception:
+        raise HTTPException(503,"recognition engine unavailable")
+    if r.status_code==422: return None,None
+    if r.status_code==400: raise HTTPException(400,"image could not be decoded by the recognition engine")
+    if not r.is_success: raise HTTPException(502,"recognition engine error")
+    body=r.json()
+    return body.get("embedding"),body.get("bbox")
+
+def _secondary_faces(gray, bbox):
+    """Count extra frontal faces of comparable size outside the engine's primary face. The engine reports only its
+    largest detection, so the OpenCV-bundled Haar cascade is run locally to reject multi-face images."""
+    global _haar
+    if _haar is None:
+        _haar=cv2.CascadeClassifier(os.path.join(cv2.data.haarcascades,"haarcascade_frontalface_default.xml"))
+    x,y,w,h=bbox
+    side=max(24,min(w,h)//2)
+    extra=0
+    for fx,fy,fw,fh in _haar.detectMultiScale(gray,scaleFactor=1.1,minNeighbors=6,minSize=(side,side)):
+        cx,cy=fx+fw/2,fy+fh/2
+        if not (x<=cx<=x+w and y<=cy<=y+h): extra+=1
+    return extra
+
+def _quality_thresholds():
+    return {"max_faces":ENROLL_MAX_FACES,"min_face_px":ENROLL_MIN_FACE_PX,"min_sharpness":ENROLL_MIN_SHARPNESS,
+            "brightness_range":[ENROLL_MIN_BRIGHTNESS,ENROLL_MAX_BRIGHTNESS],"min_images":ENROLL_MIN_IMAGES,"max_images":ENROLL_MAX_IMAGES,
+            "max_image_bytes":ENROLL_MAX_IMAGE_BYTES,"session_ttl_hours":ENROLL_SESSION_TTL_HOURS,
+            "face_count_method":"engine primary detection + OpenCV Haar frontal cascade for additional faces",
+            "sharpness_metric":"variance of Laplacian over the grayscale face crop",
+            "brightness_metric":"mean grayscale value (0-255) over the face crop","pose_supported":False,"liveness":False}
+
+def _analyze_image(image_b64):
+    """Return (quality, reasons, embedding|None, image_sha256). The image itself is never stored."""
+    if len(image_b64)>ENROLL_MAX_IMAGE_BYTES*4//3+4: raise HTTPException(413,"image exceeds the enrollment size limit")
+    try:
+        raw=base64.b64decode(image_b64,validate=True)
+    except Exception:
+        raise HTTPException(400,"image_base64 is not valid base64")
+    if len(raw)>ENROLL_MAX_IMAGE_BYTES: raise HTTPException(413,"image exceeds the enrollment size limit")
+    sha=hashlib.sha256(raw).hexdigest()
+    img=cv2.imdecode(np.frombuffer(raw,np.uint8),cv2.IMREAD_COLOR)
+    if img is None: raise HTTPException(400,"image could not be decoded")
+    h,w=img.shape[:2]
+    q={"width":int(w),"height":int(h),"face_count":0,"face_bbox":None,"face_min_side_px":None,"sharpness":None,"brightness":None,
+       "pose":None,"pose_supported":False,"liveness_checked":False}
+    emb,bbox=_engine_embed(image_b64)
+    if emb is None or not bbox or len(bbox)<4: return q,["no_face_detected"],None,sha
+    x,y,bw,bh=[int(round(float(v))) for v in bbox[:4]]
+    x0,y0,x1,y1=max(0,x),max(0,y),min(w,x+bw),min(h,y+bh)
+    if x1<=x0 or y1<=y0: return q,["face_out_of_frame"],None,sha
+    gray=cv2.cvtColor(img,cv2.COLOR_BGR2GRAY)
+    crop=gray[y0:y1,x0:x1]
+    q.update(face_count=1+_secondary_faces(gray,(x0,y0,x1-x0,y1-y0)),face_bbox=[x0,y0,x1-x0,y1-y0],face_min_side_px=min(x1-x0,y1-y0),
+             sharpness=round(float(cv2.Laplacian(crop,cv2.CV_64F).var()),2),brightness=round(float(crop.mean()),2))
+    reasons=[]
+    if q["face_count"]>ENROLL_MAX_FACES: reasons.append("multiple_faces")
+    if q["face_min_side_px"]<ENROLL_MIN_FACE_PX: reasons.append("face_too_small")
+    if q["sharpness"]<ENROLL_MIN_SHARPNESS: reasons.append("too_blurry")
+    if q["brightness"]<ENROLL_MIN_BRIGHTNESS: reasons.append("too_dark")
+    elif q["brightness"]>ENROLL_MAX_BRIGHTNESS: reasons.append("too_bright")
+    vec=np.asarray(emb,dtype=np.float64)
+    if vec.ndim!=1 or not vec.size or not np.all(np.isfinite(vec)) or not np.linalg.norm(vec): reasons.append("invalid_embedding")
+    return q,reasons,(None if reasons else [float(v) for v in vec]),sha
+
+def _aggregate(vectors):
+    """l2-mean-l2/v1: L2-normalise each accepted embedding (float64), take the element-wise arithmetic mean in image
+    sequence order, L2-normalise the mean, and round each component to 8 decimal places."""
+    arr=[np.asarray(v,dtype=np.float64) for v in vectors]
+    if len({a.size for a in arr})!=1: raise HTTPException(409,"accepted embeddings have different dimensions")
+    m=np.stack([a/np.linalg.norm(a) for a in arr]).mean(axis=0)
+    n=np.linalg.norm(m)
+    if not n: raise HTTPException(409,"accepted embeddings cancel out; capture new images")
+    return [round(float(x),8) for x in m/n]
+
+def _cosine(a, b):
+    a=np.asarray(a,dtype=np.float64); b=np.asarray(b,dtype=np.float64)
+    na,nb=np.linalg.norm(a),np.linalg.norm(b)
+    return float(a@b/(na*nb)) if na and nb else -1.0
+
+# Mission 27 - multi-image enrollment sessions
+
+_SESSION_COLS="session_id,subject_id,display_name,consent_reference,retention_days,operator_ref,status,subject_existed,created_at,updated_at,expires_at,finalized_at"
+_IMAGE_COLS="image_id,seq,status,reasons,quality,model_key,created_at"
+
+def _session_dict(r):
+    status=r[6]
+    if status=="open" and r[10]<=datetime.datetime.now(datetime.timezone.utc): status="expired"
+    return {"session_id":r[0],"subject_id":r[1],"display_name":r[2],"consent_reference":r[3],"retention_days":r[4],"operator_ref":r[5],
+            "status":status,"re_enrollment":r[7],"created_at":r[8],"updated_at":r[9],"expires_at":r[10],"finalized_at":r[11],
+            "aggregation_method":_AGGREGATION_METHOD,"liveness_checked":False}
+
+def _image_dict(r):
+    return {"image_id":r[0],"seq":r[1],"status":r[2],"accepted":r[2]=="accepted","reasons":r[3],"quality":r[4],"model_key":r[5],"created_at":r[6]}
+
+def _session_or_404(c, session_id, lock=False):
+    row=c.execute(f"select {_SESSION_COLS} from enrollment_sessions where session_id=%s"+(" for update" if lock else ""),(session_id,)).fetchone()
+    if not row: raise HTTPException(404,"enrollment session not found")
+    return row
+
+def _open_session(c, session_id, lock=False):
+    row=_session_or_404(c,session_id,lock)
+    status=_session_dict(row)["status"]
+    if status!="open": raise HTTPException(409,f"enrollment session is {status}")
+    return row
+
+def _close_session(c, session_id, status):
+    """Close a session and purge its per-image templates; quality metadata is kept for audit."""
+    c.execute("update enrollment_sessions set status=%s,updated_at=now(),finalized_at=case when %s='finalized' then now() else null end where session_id=%s",
+              (status,status,session_id))
+    c.execute("update enrollment_session_images set embedding=null where session_id=%s",(session_id,))
+    c.execute("""update duplicate_candidates set status='resolved',resolution='session_closed',resolved_at=now(),updated_at=now()
+                 where session_id=%s and status='open'""",(session_id,))
+
+@app.get("/v1/enrollment-sessions",tags=["enrollment-sessions"])
+def list_enrollment_sessions(status:str="all", subject_id:Optional[str]=None, limit:int=200):
+    limit=max(1,min(limit,1000))
+    with conn() as c:
+        rows=c.execute(f"""select {_SESSION_COLS} from enrollment_sessions where (%s::text is null or subject_id=%s)
+                           order by created_at desc limit %s""",(subject_id,subject_id,limit)).fetchall()
+    out=[_session_dict(r) for r in rows]
+    return [s for s in out if status=="all" or s["status"]==status]
+
+@app.post("/v1/enrollment-sessions",tags=["enrollment-sessions"])
+def create_enrollment_session(req:EnrollmentSessionIn):
+    if not req.consent_obtained: raise HTTPException(400,"explicit enrollment consent is required")
+    subject_id=_ref(req.subject_id,"subject_id",required=True)
+    operator_ref=_ref(req.operator_ref,"operator_ref")
+    session_id="es-"+uuid.uuid4().hex[:20]
+    expires=datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=ENROLL_SESSION_TTL_HOURS)
+    with conn() as c:
+        for (stale,) in c.execute("select session_id from enrollment_sessions where subject_id=%s and status='open' and expires_at<=now()",(subject_id,)).fetchall():
+            _close_session(c,stale,"expired")
+        existed=_exists(c,"subjects","subject_id",subject_id)
+        row=c.execute(f"""insert into enrollment_sessions(session_id,subject_id,display_name,consent_reference,retention_days,operator_ref,subject_existed,expires_at)
+                          values(%s,%s,%s,%s,%s,%s,%s,%s) on conflict do nothing returning {_SESSION_COLS}""",
+                      (session_id,subject_id,req.display_name.strip(),req.consent_reference.strip(),req.retention_days,operator_ref,existed,expires)).fetchone()
+    if not row: raise HTTPException(409,"an open enrollment session already exists for this subject_id")
+    _audit("enrollment_session.created","enrollment_session",session_id,{"subject_id":subject_id,"re_enrollment":existed,
+           "operator_ref":operator_ref,"consent_reference":req.consent_reference.strip()})
+    return {**_session_dict(row),"thresholds":_quality_thresholds()}
+
+@app.get("/v1/enrollment-sessions/{session_id}",tags=["enrollment-sessions"])
+def get_enrollment_session(session_id:str):
+    with conn() as c:
+        row=_session_or_404(c,session_id)
+        images=c.execute(f"select {_IMAGE_COLS} from enrollment_session_images where session_id=%s order by seq",(session_id,)).fetchall()
+        cands=c.execute(f"select {_CANDIDATE_COLS} from duplicate_candidates where session_id=%s order by score desc",(session_id,)).fetchall()
+    return {**_session_dict(row),"images":[_image_dict(i) for i in images],"accepted_images":sum(1 for i in images if i[2]=="accepted"),
+            "duplicate_candidates":[_candidate_dict(x) for x in cands],"thresholds":_quality_thresholds()}
+
+@app.post("/v1/enrollment-sessions/{session_id}/images",tags=["enrollment-sessions"])
+def add_enrollment_image(session_id:str, req:EnrollmentImageIn):
+    if not req.consent_obtained: raise HTTPException(400,"explicit consent is required for each enrollment image")
+    with conn() as c:
+        _open_session(c,session_id)
+    quality,reasons,vec,sha=_analyze_image(req.image_base64)
+    meta=_model_meta(_engine_status()) if vec is not None else None
+    with conn() as c:
+        _open_session(c,session_id,lock=True)
+        accepted=c.execute("select model_key,image_sha256 from enrollment_session_images where session_id=%s and status='accepted'",(session_id,)).fetchall()
+        if len(accepted)>=ENROLL_MAX_IMAGES: raise HTTPException(409,f"session already has the maximum of {ENROLL_MAX_IMAGES} accepted images")
+        if not reasons and any(a[1]==sha for a in accepted): reasons.append("duplicate_image")
+        if not reasons and any(a[0]!=meta["model_key"] for a in accepted): reasons.append("model_version_changed")
+        status="rejected" if reasons else "accepted"
+        if status=="accepted": _register_model(c,meta,len(vec))
+        seq=c.execute("select coalesce(max(seq),0)+1 from enrollment_session_images where session_id=%s",(session_id,)).fetchone()[0]
+        row=c.execute(f"""insert into enrollment_session_images(image_id,session_id,seq,status,reasons,quality,image_sha256,embedding,model_key)
+                          values(%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s::jsonb,%s) returning {_IMAGE_COLS}""",
+                      ("esi-"+uuid.uuid4().hex[:16],session_id,seq,status,json.dumps(reasons),json.dumps(quality),sha,
+                       json.dumps(vec) if status=="accepted" else None,meta["model_key"] if status=="accepted" else None)).fetchone()
+        c.execute("update enrollment_sessions set updated_at=now() where session_id=%s",(session_id,))
+    out=_image_dict(row)
+    _audit("enrollment_image."+status,"enrollment_session",session_id,{"image_id":out["image_id"],"seq":seq,"reasons":reasons,
+           "face_count":quality["face_count"],"face_min_side_px":quality["face_min_side_px"],"sharpness":quality["sharpness"],"brightness":quality["brightness"]})
+    if reasons: raise HTTPException(422,{"message":"image rejected by enrollment quality checks",**out,"created_at":_iso(out["created_at"])})
+    return out
+
+def _session_aggregate(c, session_id):
+    rows=c.execute("""select embedding,model_key from enrollment_session_images where session_id=%s and status='accepted'
+                      and embedding is not null order by seq""",(session_id,)).fetchall()
+    if len(rows)<ENROLL_MIN_IMAGES: raise HTTPException(409,f"at least {ENROLL_MIN_IMAGES} accepted image(s) are required")
+    keys={r[1] for r in rows}
+    if len(keys)!=1: raise HTTPException(409,"accepted images were embedded by different model versions")
+    return _aggregate([r[0] for r in rows]),keys.pop(),len(rows)
+
+# Mission 28 - duplicate enrollment candidates. Candidates are for operator review only: FACE-ID never merges subjects
+# and never asserts that two subjects are the same person.
+
+_CANDIDATE_COLS="candidate_id,session_id,subject_ref,candidate_subject_ref,score,threshold,embedding_version,version_unverified,status,resolution,note,resolver_ref,created_at,updated_at,resolved_at"
+
+def _candidate_dict(r):
+    return {**dict(zip(_CANDIDATE_COLS.split(","),r)),"identity_asserted":False,"auto_merge":False}
+
+def _run_duplicate_check(c, session_row, aggregate, model_key):
+    """Score the session aggregate against other subjects with DUPLICATE_THRESHOLD (distinct from MATCH_THRESHOLD).
+    Subjects on a different embedding_version are skipped; unversioned legacy subjects are compared and flagged."""
+    version=_model_from_registry(c,model_key)["embedding_version"]
+    subjects=c.execute("select subject_id,embedding,embedding_version from subjects where subject_id<>%s",(session_row[1],)).fetchall()
+    scored=[]; skipped=0
+    for sid,emb,ver in subjects:
+        if (ver and ver!=version) or not isinstance(emb,list) or len(emb)!=len(aggregate):
+            skipped+=1; continue
+        s=_cosine(aggregate,emb)
+        if s>=DUPLICATE_THRESHOLD: scored.append((s,sid,ver is None))
+    scored.sort(key=lambda x:(-x[0],x[1]))
+    new=[]
+    for s,sid,unverified in scored[:DUPLICATE_MAX_CANDIDATES]:
+        row=c.execute("""insert into duplicate_candidates(candidate_id,session_id,subject_ref,candidate_subject_ref,score,threshold,embedding_version,version_unverified)
+                         values(%s,%s,%s,%s,%s,%s,%s,%s) on conflict(session_id,candidate_subject_ref) do update set score=excluded.score,
+                         threshold=excluded.threshold,updated_at=now() returning candidate_id,(xmax=0)""",
+                      ("dc-"+uuid.uuid4().hex[:16],session_row[0],session_row[1],sid,round(s,6),DUPLICATE_THRESHOLD,version,unverified)).fetchone()
+        if row[1]: new.append({"candidate_id":row[0],"candidate_subject_ref":sid,"score":round(s,6)})
+    return new,skipped,version
+
+@app.post("/v1/enrollment-sessions/{session_id}/duplicate-check",tags=["duplicate-candidates"])
+def enrollment_duplicate_check(session_id:str):
+    with conn() as c:
+        row=_open_session(c,session_id,lock=True)
+        aggregate,model_key,count=_session_aggregate(c,session_id)
+        new,skipped,version=_run_duplicate_check(c,row,aggregate,model_key)
+        cands=c.execute(f"select {_CANDIDATE_COLS} from duplicate_candidates where session_id=%s order by score desc",(session_id,)).fetchall()
+    if new: _audit("duplicate_candidate.detected","enrollment_session",session_id,{"subject_ref":row[1],"candidates":new,"threshold":DUPLICATE_THRESHOLD})
+    return {"session_id":session_id,"threshold":DUPLICATE_THRESHOLD,"recognition_threshold":MATCH_THRESHOLD,"embedding_version":version,
+            "accepted_images":count,"skipped_incompatible_subjects":skipped,"new_candidates":new,"candidates":[_candidate_dict(x) for x in cands],
+            "identity_asserted":False,"auto_merge":False}
+
+@app.post("/v1/enrollment-sessions/{session_id}/finalize",tags=["enrollment-sessions"])
+def finalize_enrollment_session(session_id:str):
+    blocked=None
+    with conn() as c:
+        row=_open_session(c,session_id,lock=True)
+        aggregate,model_key,count=_session_aggregate(c,session_id)
+        new,skipped,version=_run_duplicate_check(c,row,aggregate,model_key)
+        blocking=c.execute(f"""select {_CANDIDATE_COLS} from duplicate_candidates where session_id=%s
+                               and (status='open' or resolution='duplicate_confirmed') order by score desc""",(session_id,)).fetchall()
+        if blocking:
+            blocked=[_candidate_dict(x) for x in blocking]
+        else:
+            subject_id=row[1]
+            history_id=_archive_embedding(c,subject_id,"enrollment_session:"+session_id)
+            c.execute("""insert into subjects(subject_id,display_name,embedding,consent_obtained,consent_reference,retention_days,enrollment_source)
+                         values(%s,%s,%s::jsonb,true,%s,%s,'enrollment-session')
+                         on conflict(subject_id) do update set display_name=excluded.display_name,embedding=excluded.embedding,consent_obtained=true,
+                         consent_reference=excluded.consent_reference,retention_days=excluded.retention_days,enrollment_source='enrollment-session',updated_at=now()""",
+                      (subject_id,row[2],json.dumps(aggregate),row[3],row[4]))
+            _stamp_subject(c,subject_id,_model_from_registry(c,model_key),len(aggregate),_AGGREGATION_METHOD,count)
+            _close_session(c,session_id,"finalized")
+    if new: _audit("duplicate_candidate.detected","enrollment_session",session_id,{"subject_ref":row[1],"candidates":new,"threshold":DUPLICATE_THRESHOLD})
+    if blocked:
+        for b in blocked:
+            for k in ("created_at","updated_at","resolved_at"): b[k]=_iso(b[k])
+        raise HTTPException(409,{"message":"duplicate candidates must be resolved as not_duplicate or dismissed before finalize",
+                                 "candidates":blocked})
+    _audit("enrollment_session.finalized","enrollment_session",session_id,{"subject_id":row[1],"re_enrollment":row[7],"image_count":count,
+           "aggregation_method":_AGGREGATION_METHOD,"model_key":model_key,"embedding_version":version,"archived_history_id":history_id})
+    return {"session_id":session_id,"status":"finalized","subject_id":row[1],"enrolled":True,"image_count":count,
+            "aggregation_method":_AGGREGATION_METHOD,"model_key":model_key,"embedding_version":version,"archived_history_id":history_id,
+            "skipped_incompatible_subjects":skipped,"liveness_checked":False}
+
+@app.post("/v1/enrollment-sessions/{session_id}/cancel",tags=["enrollment-sessions"])
+def cancel_enrollment_session(session_id:str):
+    with conn() as c:
+        row=_open_session(c,session_id,lock=True)
+        _close_session(c,session_id,"cancelled")
+    _audit("enrollment_session.cancelled","enrollment_session",session_id,{"subject_id":row[1]})
+    return {"session_id":session_id,"status":"cancelled"}
+
+@app.get("/v1/duplicate-candidates",tags=["duplicate-candidates"])
+def list_duplicate_candidates(status:str="open", session_id:Optional[str]=None, limit:int=200):
+    if status not in {"all","open","resolved"}: raise HTTPException(400,"status must be all, open, or resolved")
+    limit=max(1,min(limit,1000))
+    with conn() as c:
+        rows=c.execute(f"""select {_CANDIDATE_COLS} from duplicate_candidates where (%s='all' or status=%s)
+                           and (%s::text is null or session_id=%s) order by created_at desc,score desc limit %s""",
+                       (status,status,session_id,session_id,limit)).fetchall()
+    return [_candidate_dict(r) for r in rows]
+
+@app.post("/v1/duplicate-candidates/{candidate_id}/resolve",tags=["duplicate-candidates"])
+def resolve_duplicate_candidate(candidate_id:str, req:DuplicateResolveIn):
+    if req.resolution not in _DUPLICATE_RESOLUTIONS: raise HTTPException(400,"resolution must be not_duplicate, duplicate_confirmed, or dismissed")
+    resolver=_ref(req.resolver_ref,"resolver_ref")
+    with conn() as c:
+        cur=c.execute("select status from duplicate_candidates where candidate_id=%s for update",(candidate_id,)).fetchone()
+        if not cur: raise HTTPException(404,"duplicate candidate not found")
+        if cur[0]!="open": raise HTTPException(409,"duplicate candidate is already resolved")
+        row=c.execute(f"""update duplicate_candidates set status='resolved',resolution=%s,note=%s,resolver_ref=%s,resolved_at=now(),updated_at=now()
+                          where candidate_id=%s returning {_CANDIDATE_COLS}""",(req.resolution,req.note,resolver,candidate_id)).fetchone()
+    _audit("duplicate_candidate.resolved","duplicate_candidate",candidate_id,{"session_id":row[1],"subject_ref":row[2],
+           "candidate_subject_ref":row[3],"score":row[4],"resolution":req.resolution,"resolver_ref":resolver,"note":req.note})
+    return _candidate_dict(row)
+
+# Mission 29 - read-only model registry, migration status, and non-destructive re-embedding queue
+
+_JOB_COLS="job_id,subject_id,status,reason,requested_by_ref,source_embedding_version,target_embedding_version,target_model_key,history_id,error,consent_reference,created_at,updated_at,completed_at"
+
+def _job_dict(r):
+    return dict(zip(_JOB_COLS.split(","),r))
+
+@app.get("/v1/models",tags=["model-registry"])
+def list_models():
+    with conn() as c:
+        rows=c.execute(f"select {_MODEL_COLS} from recognition_models order by first_seen_at").fetchall()
+        counts=dict(c.execute("select model_key,count(*) from subjects where model_key is not null group by model_key").fetchall())
+    return [{**_model_dict(r),"subject_count":counts.get(r[0],0)} for r in rows]
+
+@app.get("/v1/models/current",tags=["model-registry"])
+def current_model():
+    meta=_model_meta(_engine_status())
+    with conn() as c:
+        registered=_model_from_registry(c,meta["model_key"])
+    return {**meta,"registered":registered is not None,"dimension":registered and registered["dimension"]}
+
+@app.get("/v1/models/migration-status",tags=["model-registry"])
+def model_migration_status():
+    current=None; engine_error=None
+    try: current=_model_meta(_engine_status())
+    except HTTPException as e: engine_error=e.detail
+    with conn() as c:
+        versions=c.execute("select embedding_version,count(*) from subjects group by embedding_version order by embedding_version nulls first").fetchall()
+        jobs=dict(c.execute("select status,count(*) from reembedding_jobs group by status").fetchall())
+        archived=c.execute("select count(*) from subject_embedding_history").fetchone()[0]
+    target=current and current["embedding_version"]
+    total=sum(v[1] for v in versions)
+    on_target=sum(v[1] for v in versions if target and v[0]==target)
+    return {"current_model":current,"engine_error":engine_error,"subjects_total":total,
+            "subjects_by_embedding_version":[{"embedding_version":v[0],"count":v[1],"current":bool(target) and v[0]==target} for v in versions],
+            "subjects_on_current_version":on_target if target else None,"subjects_needing_migration":total-on_target if target else None,
+            "unversioned_subjects":sum(v[1] for v in versions if v[0] is None),
+            "reembedding_jobs":{s:jobs.get(s,0) for s in sorted(_JOB_STATUSES)},"archived_embeddings":archived,
+            "embedding_history_retention_days":EMBEDDING_HISTORY_DAYS,"automatic_migration":False}
+
+@app.get("/v1/reembedding-jobs",tags=["model-registry"])
+def list_reembedding_jobs(status:str="all", subject_id:Optional[str]=None, limit:int=200):
+    limit=max(1,min(limit,1000))
+    with conn() as c:
+        rows=c.execute(f"""select {_JOB_COLS} from reembedding_jobs where (%s='all' or status=%s) and (%s::text is null or subject_id=%s)
+                           order by created_at desc limit %s""",(status,status,subject_id,subject_id,limit)).fetchall()
+    return [_job_dict(r) for r in rows]
+
+@app.post("/v1/reembedding-jobs",tags=["model-registry"])
+def queue_reembedding_jobs(req:ReembeddingJobsIn):
+    """Queue records only. Nothing is re-embedded until an operator completes a job with new consented images."""
+    subject_ids=list(dict.fromkeys(_ref(x,"subject_id",required=True) for x in req.subject_ids))
+    requested_by=_ref(req.requested_by_ref,"requested_by_ref")
+    meta=_model_meta(_engine_status())
+    created=[]; existing=[]
+    with conn() as c:
+        found=dict(c.execute("select subject_id,embedding_version from subjects where subject_id = any(%s)",(subject_ids,)).fetchall())
+        missing=[x for x in subject_ids if x not in found]
+        if missing: raise HTTPException(400,"one or more subject_ids do not exist")
+        for sid in subject_ids:
+            row=c.execute(f"""insert into reembedding_jobs(job_id,subject_id,reason,requested_by_ref,source_embedding_version,target_embedding_version,target_model_key)
+                              values(%s,%s,%s,%s,%s,%s,%s) on conflict(subject_id) where status='queued' do nothing returning {_JOB_COLS}""",
+                          ("rej-"+uuid.uuid4().hex[:16],sid,req.reason.strip(),requested_by,found[sid],meta["embedding_version"],meta["model_key"])).fetchone()
+            if row: created.append(_job_dict(row))
+            else: existing.append(_job_dict(c.execute(f"select {_JOB_COLS} from reembedding_jobs where subject_id=%s and status='queued'",(sid,)).fetchone()))
+    for j in created:
+        _audit("reembedding_job.queued","reembedding_job",j["job_id"],{"subject_id":j["subject_id"],"source_embedding_version":j["source_embedding_version"],
+               "target_embedding_version":j["target_embedding_version"],"requested_by_ref":requested_by,"reason":j["reason"]})
+    return {"created":created,"existing":existing,"target_embedding_version":meta["embedding_version"],"destructive":False}
+
+@app.post("/v1/reembedding-jobs/{job_id}/complete",tags=["model-registry"])
+def complete_reembedding_job(job_id:str, req:ReembeddingCompleteIn):
+    if not req.consent_obtained: raise HTTPException(400,"explicit consent is required for re-embedding images")
+    with conn() as c:
+        job=c.execute(f"select {_JOB_COLS} from reembedding_jobs where job_id=%s",(job_id,)).fetchone()
+    if not job: raise HTTPException(404,"re-embedding job not found")
+    if job[2]!="queued": raise HTTPException(409,f"re-embedding job is {job[2]}")
+    results=[_analyze_image(b) for b in req.images_base64]
+    shas=[r[3] for r in results]
+    rejected=[{"index":i,"reasons":r[1]+(["duplicate_image"] if shas.index(r[3])!=i else []),"quality":r[0]} for i,r in enumerate(results)
+              if r[1] or shas.index(r[3])!=i]
+    if rejected: raise HTTPException(422,{"message":"one or more images rejected by enrollment quality checks; job remains queued","rejected":rejected})
+    meta=_model_meta(_engine_status())
+    aggregate=_aggregate([r[2] for r in results])
+    error=None; history_id=None
+    with conn() as c:
+        cur=c.execute("select status,subject_id,target_embedding_version from reembedding_jobs where job_id=%s for update",(job_id,)).fetchone()
+        if cur[0]!="queued": raise HTTPException(409,f"re-embedding job is {cur[0]}")
+        if meta["embedding_version"]!=cur[2]: error="target_embedding_version_mismatch"
+        elif not _exists(c,"subjects","subject_id",cur[1]): error="subject_not_found"
+        if error:
+            c.execute("update reembedding_jobs set status='failed',error=%s,updated_at=now(),completed_at=now() where job_id=%s",(error,job_id))
+        else:
+            _register_model(c,meta,len(aggregate))
+            history_id=_archive_embedding(c,cur[1],"reembedding_job:"+job_id)
+            c.execute("update subjects set embedding=%s::jsonb,updated_at=now() where subject_id=%s",(json.dumps(aggregate),cur[1]))
+            _stamp_subject(c,cur[1],meta,len(aggregate),_AGGREGATION_METHOD,len(results))
+            c.execute("""update reembedding_jobs set status='succeeded',history_id=%s,consent_reference=%s,updated_at=now(),completed_at=now()
+                         where job_id=%s""",(history_id,req.consent_reference,job_id))
+        row=c.execute(f"select {_JOB_COLS} from reembedding_jobs where job_id=%s",(job_id,)).fetchone()
+    if error:
+        _audit("reembedding_job.failed","reembedding_job",job_id,{"subject_id":cur[1],"error":error,"engine_embedding_version":meta["embedding_version"]})
+        raise HTTPException(409,{"message":"re-embedding failed; the existing embedding was not changed","error":error})
+    _audit("reembedding_job.succeeded","reembedding_job",job_id,{"subject_id":cur[1],"embedding_version":meta["embedding_version"],
+           "model_key":meta["model_key"],"image_count":len(results),"archived_history_id":history_id})
+    return {**_job_dict(row),"image_count":len(results),"aggregation_method":_AGGREGATION_METHOD}
+
+@app.post("/v1/reembedding-jobs/{job_id}/cancel",tags=["model-registry"])
+def cancel_reembedding_job(job_id:str):
+    with conn() as c:
+        row=c.execute("""update reembedding_jobs set status='cancelled',updated_at=now(),completed_at=now()
+                         where job_id=%s and status='queued' returning subject_id""",(job_id,)).fetchone()
+        if not row:
+            if not _exists(c,"reembedding_jobs","job_id",job_id): raise HTTPException(404,"re-embedding job not found")
+            raise HTTPException(409,"only queued re-embedding jobs can be cancelled")
+    _audit("reembedding_job.cancelled","reembedding_job",job_id,{"subject_id":row[0]})
+    return {"job_id":job_id,"status":"cancelled"}
+
+# Mission 30 - bounded, redacted, integrity-checked audit export and audit retention readback
+
+_BIOMETRIC_KEY_RE=re.compile(r"^(embeddings?|templates?|face_template|images?|image_base64|images_base64|image_[ab]_base64|snapshots?|snapshot_bytes|"
+                             r"features?|vectors?|photos?|face_crop|biometric\w*)$",re.I)
+_SECRET_KEY_RE=re.compile(r"(^|_)(password|passwd|passphrase|secret|token|api_?key|authorization|credentials?|cookie|private_?key|signature|hmac_key)($|_)",re.I)
+_IDENTIFIER_KEYS={"id_hash"}
+_B64ISH_RE=re.compile(r"^[A-Za-z0-9+/=_\-\s]+$")
+_BEARER_RE=re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}")
+
+def _redact(value, counts, key=None):
+    if key is not None:
+        if _BIOMETRIC_KEY_RE.match(key): counts["biometric"]+=1; return "[REDACTED:biometric]"
+        if not key.lower().endswith("_env") and _SECRET_KEY_RE.search(key): counts["secret"]+=1; return "[REDACTED:secret]"
+        if key.lower() in _IDENTIFIER_KEYS: counts["identifier"]+=1; return "[REDACTED:identifier]"
+    if isinstance(value,dict): return {k:_redact(v,counts,str(k)) for k,v in value.items()}
+    if isinstance(value,list):
+        if len(value)>=32 and all(isinstance(x,(int,float)) and not isinstance(x,bool) for x in value):
+            counts["biometric"]+=1; return "[REDACTED:biometric]"
+        return [_redact(v,counts) for v in value]
+    if isinstance(value,str):
+        if value.startswith("data:image") or (len(value)>=512 and _B64ISH_RE.match(value)):
+            counts["biometric"]+=1; return "[REDACTED:biometric]"
+        if _BEARER_RE.search(value):
+            counts["secret"]+=1; return _BEARER_RE.sub(r"\1 [REDACTED:secret]",value)
+    return value
+
+def _audit_retention(c):
+    pol=c.execute("select policy_id,days,enabled,updated_at from retention_policies where resource_type='audit'").fetchone()
+    stats=c.execute("select count(*),min(occurred_at),max(occurred_at) from audit_log").fetchone()
+    older=None
+    if pol and pol[2]:
+        older=c.execute("select count(*) from audit_log where occurred_at < now() - (%s * interval '1 day')",(pol[1],)).fetchone()[0]
+    return {"resource_type":"audit","policy":{"policy_id":pol[0],"days":pol[1],"enabled":pol[2],"updated_at":_iso(pol[3])} if pol else None,
+            "enforced":False,"enforcement":"advisory: FACE-ID never deletes audit records automatically; export before any operator-run purge",
+            "record_count":stats[0],"oldest_occurred_at":_iso(stats[1]),"newest_occurred_at":_iso(stats[2]),
+            "records_older_than_policy":older,"export_max_range_days":AUDIT_EXPORT_MAX_DAYS}
+
+@app.get("/v1/audit/retention",tags=["audit-compliance"])
+def audit_retention():
+    with conn() as c:
+        return _audit_retention(c)
+
+def _b64url(obj):
+    return base64.urlsafe_b64encode(_canonical(obj)).decode().rstrip("=")
+
+@app.get("/v1/audit/export",tags=["audit-compliance"])
+def audit_export(since:str, until:str, actor:Optional[str]=None, action:Optional[str]=None, target_type:Optional[str]=None,
+                 limit:int=500, cursor:Optional[str]=None):
+    since_ts=_parse_ts(since,"since"); until_ts=_parse_ts(until,"until")
+    if until_ts<=since_ts: raise HTTPException(400,"until must be after since")
+    if until_ts-since_ts>datetime.timedelta(days=AUDIT_EXPORT_MAX_DAYS):
+        raise HTTPException(400,f"export range must not exceed {AUDIT_EXPORT_MAX_DAYS} days")
+    limit=max(1,min(limit,1000))
+    prefix=None
+    if action and action.endswith("*"):
+        prefix=action[:-1].replace("\\","\\\\").replace("%","\\%").replace("_","\\_")+"%"
+    filters={"since":_iso(since_ts),"until":_iso(until_ts),"actor":actor,"action":action,"target_type":target_type,"limit":limit}
+    filters_digest=hashlib.sha256(_canonical(filters)).hexdigest()
+    after_t=after_id=None; seed="0"*64; page=1
+    if cursor:
+        try:
+            cur=json.loads(base64.urlsafe_b64decode(cursor+"="*(-len(cursor)%4)))
+            after_t=datetime.datetime.fromisoformat(cur["t"]); after_id=str(cur["id"]); seed=str(cur["c"]); page=int(cur["p"])+1
+            if cur["f"]!=filters_digest: raise HTTPException(400,"cursor does not match the export filters")
+            if not re.fullmatch(r"[0-9a-f]{64}",seed) or after_t.tzinfo is None: raise ValueError
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(400,"invalid cursor")
+    with conn() as c:
+        rows=c.execute("""select audit_id,actor,action,target_type,target_id,details,occurred_at from audit_log
+                          where occurred_at>=%s and occurred_at<%s
+                          and (%s::text is null or actor=%s)
+                          and (%s::text is null or %s::text is not null or action=%s)
+                          and (%s::text is null or action like %s)
+                          and (%s::text is null or target_type=%s)
+                          and (%s::timestamptz is null or (occurred_at,audit_id)>(%s::timestamptz,%s::text))
+                          order by occurred_at,audit_id limit %s""",
+                       (since_ts,until_ts,actor,actor,action,prefix,action,prefix,prefix,target_type,target_type,after_t,after_t,after_id,limit+1)).fetchall()
+        retention=_audit_retention(c)
+    counts={"secret":0,"biometric":0,"identifier":0}
+    records=[]; chain=seed; digests=[]
+    for r in rows[:limit]:
+        rec={"audit_id":r[0],"occurred_at":_iso(r[6]),"actor":r[1],"action":r[2],"target_type":r[3],"target_id":r[4],
+             "details":_redact(r[5] or {},counts)}
+        d=hashlib.sha256(_canonical(rec)).hexdigest()
+        chain=hashlib.sha256((chain+d).encode()).hexdigest()
+        records.append({**rec,"record_sha256":d}); digests.append(d)
+    has_more=len(rows)>limit
+    next_cursor=_b64url({"t":records[-1]["occurred_at"],"id":records[-1]["audit_id"],"c":chain,"p":page,"f":filters_digest}) if has_more else None
+    export_id="aex-"+uuid.uuid4().hex[:20]
+    manifest={"export_id":export_id,"format":"faceid-audit-export/v1","generated_at":_iso(datetime.datetime.now(datetime.timezone.utc)),
+              "service":{"name":app.title,"version":app.version},"filters":filters,"filters_sha256":filters_digest,"page":page,
+              "record_count":len(records),"has_more":has_more,"next_cursor":next_cursor,
+              "first_occurred_at":records[0]["occurred_at"] if records else None,"last_occurred_at":records[-1]["occurred_at"] if records else None,
+              "integrity":{"record_digest":"sha256 over canonical JSON (sorted keys, compact separators, UTF-8) of each record without record_sha256",
+                           "chain_algorithm":"chain_i = sha256(hex(chain_{i-1}) + hex(record_sha256_i)); page 1 seed is 64 zeros",
+                           "chain_seed":seed,"chain_head":chain,"page_sha256":hashlib.sha256("".join(digests).encode()).hexdigest()},
+              "redaction":{"policy":_REDACTION_POLICY,"secret_values":counts["secret"],"biometric_values":counts["biometric"],
+                           "identifier_values":counts["identifier"],"biometric_templates_included":False,"secrets_included":False},
+              "retention":retention}
+    if AUDIT_EXPORT_HMAC_KEY:
+        manifest["signature"]={"algorithm":"hmac-sha256","key_id":AUDIT_EXPORT_KEY_ID,"signed_content":"canonical manifest without signature",
+                               "value":hmac.new(AUDIT_EXPORT_HMAC_KEY.encode(),_canonical(manifest),hashlib.sha256).hexdigest()}
+    else:
+        manifest["signature"]=None
+    _audit("audit.exported","audit_export",export_id,{"filters":filters,"page":page,"record_count":len(records),"chain_head":chain,
+           "signed":bool(AUDIT_EXPORT_HMAC_KEY)})
+    return {"manifest":manifest,"records":records}
