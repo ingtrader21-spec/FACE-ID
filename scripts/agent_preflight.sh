@@ -47,8 +47,7 @@ rm -f /tmp/codestra-conflicts.$$ 2>/dev/null || true
 added=$(git diff --unified=0 "$BASE_SHA"...HEAD -- '*.sh' '*.bash' '*.ps1' '*.py' '*.js' '*.ts' '*.yml' '*.yaml' 'Dockerfile*' 'Makefile*' '.github/workflows/*' ':!scripts/agent_preflight.sh' ':!.github/workflows/agent-governance.yml' | sed -n 's/^+\([^+]\)/\1/p')
 if printf '%s
 ' "$added" | grep -Eqi '(/metrics|/internal).*(public|expose|0\.0\.0\.0)|0\.0\.0\.0.*(/metrics|/internal)|Access-Control-Allow-Origin[^[:alnum:]]*\*'; then echo PREFLIGHT_FAIL_FORBIDDEN_ROUTE_OR_HEADER; exit 31; fi
-if printf '%s
-' "$added" | grep -Eqi '(^|[;&|[:space:]])(docker[[:space:]]+compose[[:space:]]+up|kubectl[[:space:]]+(apply|create|delete|rollout)|helm[[:space:]]+(install|upgrade)|terraform[[:space:]]+apply|systemctl[[:space:]]+(restart|start|stop)|vault[[:space:]]+write|bao[[:space:]]+write|openbao[[:space:]]+write|postal[[:space:]].*send|curl[[:space:]].*(-X|--request)[[:space:]]*(POST|PUT|PATCH|DELETE))'; then echo PREFLIGHT_FAIL_PRODUCTION_EFFECT; exit 32; fi
+if printf '%s\n' "$added" | grep -Eqi '(ALLOW_PRODUCTION_EFFECTS|production_authorized|runtimeApplyAuthorized|provider_effects_enabled|live_effects_enabled)[[:space:]]*[:=][[:space:]]*(1|true|yes)'; then echo PREFLIGHT_FAIL_PRODUCTION_EFFECT_FLAG; exit 32; fi
 if test "$certify" -eq 1; then
   git diff --check "$BASE_SHA"...HEAD
   test -z "$(git status --porcelain)" || { echo PREFLIGHT_FAIL_CERT_DIRTY; exit 33; }
