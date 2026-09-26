@@ -912,7 +912,7 @@ def capabilities(): return {"camera_ingest":["rtsp","onvif"],"recognition":["enr
     "duplicate_candidates":{"endpoint":"/v1/duplicate-candidates","threshold":DUPLICATE_THRESHOLD,"recognition_threshold":MATCH_THRESHOLD,"max_candidates":DUPLICATE_MAX_CANDIDATES,"auto_merge":False,"identity_assertion":False},
     "model_registry":{"endpoints":["/v1/models","/v1/models/current","/v1/models/migration-status","/v1/reembedding-jobs"],"registry_read_only":True,"automatic_migration":False,"digest_kind":"descriptor-sha256","embedding_history_retention_days":EMBEDDING_HISTORY_DAYS},
     "document_intelligence":{"ownership":"standalone-external-product","ocr_in_face_id":False,"client_handoff_endpoint":"/v1/clients/from-document-handoff","direct_service_call":False,"middleware_authority":True},
-    "client_database":{"endpoint":"/v1/clients","document_handoff":"/v1/clients/from-document-handoff","face_enrollment":"/v1/clients/{client_id}/face-enrollment","requires_explicit_biometric_consent":True,"document_photo_auto_enrollment":False},
+    "client_database":{"endpoint":"/v1/clients","document_handoff":"/v1/clients/from-document-handoff","document_handoff_readback":"/v1/clients/by-document-scan/{scan_id}","face_enrollment":"/v1/clients/{client_id}/face-enrollment","requires_explicit_biometric_consent":True,"document_photo_auto_enrollment":False},
     "audit_export":{"endpoint":"/v1/audit/export","retention_endpoint":"/v1/audit/retention","max_range_days":AUDIT_EXPORT_MAX_DAYS,"max_page_size":1000,"redaction_policy":_REDACTION_POLICY,"integrity":"sha256 record digests + hash chain","signed":bool(AUDIT_EXPORT_HMAC_KEY)},
     "middleware_authority":"Caddy -> Kong -> Middleware V3 :8095 -> service API"}
 
@@ -973,6 +973,18 @@ def list_clients(limit:int=200):
     return [{"client_id":r[0],"display_name":r[1],"country":r[2],"document_type":r[3],"document_last4":r[4],
              "attributes":r[5],"id_scan_id":r[6],"source":r[7],"subject_id":r[8],
              "face_enrolled":bool(r[8]),"created_at":r[9],"updated_at":r[10]} for r in rows]
+
+@app.get("/v1/clients/by-document-scan/{scan_id}")
+def get_client_by_document_scan(scan_id:str, tenant_ref:str):
+    with conn() as c:
+        r=c.execute("""select client_id,display_name,country,document_type,document_last4,attributes,id_scan_id,
+                       source,subject_id,created_at,updated_at from clients
+                       where id_scan_id=%s and source='document-intelligence'
+                         and attributes->>'document_tenant_ref'=%s""",(scan_id,tenant_ref)).fetchone()
+    if not r: raise HTTPException(404,"client not found")
+    return {"client_id":r[0],"display_name":r[1],"country":r[2],"document_type":r[3],"document_last4":r[4],
+            "attributes":r[5],"id_scan_id":r[6],"source":r[7],"subject_id":r[8],
+            "face_enrolled":bool(r[8]),"created_at":r[9],"updated_at":r[10]}
 
 @app.get("/v1/clients/{client_id}")
 def get_client(client_id:str):

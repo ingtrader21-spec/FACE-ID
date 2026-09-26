@@ -96,7 +96,38 @@ def test_document_handoff_and_clients_are_local_admin_only(lan):
         lan.post("/v1/clients/from-document-handoff", json=handoff()).status_code
         == 403
     )
+    assert (
+        lan.get(
+            "/v1/clients/by-document-scan/dscan_test12345?tenant_ref=tenant-a"
+        ).status_code
+        == 403
+    )
 
 
 def test_face_id_no_longer_imports_ocr_runtime():
     assert not hasattr(main, "scan_license")
+
+
+def test_document_handoff_readback_is_tenant_bound(client):
+    created = client.post("/v1/clients/from-document-handoff", json=handoff())
+    assert created.status_code == 200
+    found = client.get(
+        "/v1/clients/by-document-scan/dscan_test12345?tenant_ref=tenant-a"
+    )
+    assert found.status_code == 200
+    body = found.json()
+    assert body["client_id"] == created.json()["client_id"]
+    assert body["id_scan_id"] == "dscan_test12345"
+    assert body["attributes"]["document_tenant_ref"] == "tenant-a"
+
+    foreign = client.get(
+        "/v1/clients/by-document-scan/dscan_test12345?tenant_ref=tenant-b"
+    )
+    assert foreign.status_code == 404
+
+
+def test_document_handoff_readback_missing_is_404(client):
+    response = client.get(
+        "/v1/clients/by-document-scan/dscan_missing?tenant_ref=tenant-a"
+    )
+    assert response.status_code == 404
